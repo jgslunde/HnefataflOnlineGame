@@ -1,0 +1,15 @@
+{
+  "files": {
+    "main.css": "/HnefataflOnlineGame/static/css/main.e6c13ad2.css",
+    "main.js": "/HnefataflOnlineGame/static/js/main.ccd46ae0.js",
+    "static/js/787.aa8478b4.chunk.js": "/HnefataflOnlineGame/static/js/787.aa8478b4.chunk.js",
+    "index.html": "/HnefataflOnlineGame/index.html",
+    "main.e6c13ad2.css.map": "/HnefataflOnlineGame/static/css/main.e6c13ad2.css.map",
+    "main.ccd46ae0.js.map": "/HnefataflOnlineGame/static/js/main.ccd46ae0.js.map",
+    "787.aa8478b4.chunk.js.map": "/HnefataflOnlineGame/static/js/787.aa8478b4.chunk.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.e6c13ad2.css",
+    "static/js/main.ccd46ae0.js"
+  ]
+}
