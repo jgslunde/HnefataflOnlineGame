@@ -316,7 +316,7 @@ function movePiece(sourceCell, targetCell) {
     // Introduce a delay before capturing
     setTimeout(function() {
         capturePieces(sourceCell, targetCell, boardElement);
-    }, 500);
+    }, 300);
     sourceCell.innerText = ''; // Clear the old position
     // Clear class of source and destination
     sourceCell.className = '';
@@ -364,7 +364,7 @@ function makeAIMove() {
         if (move) {
             movePiece(move.piece, move.target);
         }
-    }, 500);    
+    }, 600);    
 }
 
 function togglePlayer() {
