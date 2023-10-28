@@ -1,0 +1,31 @@
+table {
+    border-collapse: collapse;  /* This ensures that the borders of adjacent cells are merged */
+    border: none;  /* Remove table border */
+}
+
+td {
+    width: 100px;  /* Increase from previous value */
+    height: 100px;  /* Increase from previous value */
+    text-align: center;
+    vertical-align: middle;
+    font-size: 40px;  /* Adjust font size to match larger cell size */
+    border: none;  /* Remove cell borders */
+    transition: background-color 0.3s;  /* Smooth transition for highlighting */
+}
+
+/* Light squares */
+tr:nth-child(odd) td:nth-child(odd),
+tr:nth-child(even) td:nth-child(even) {
+    background-color: #f0d9b5;
+}
+
+/* Dark squares */
+tr:nth-child(odd) td:nth-child(even),
+tr:nth-child(even) td:nth-child(odd) {
+    background-color: #b58863;
+}
+
+/* Highlighting for legal squares */
+td.legal-move {
+    background-color: #a4d3a3 !important; /* Highlight color */
+}
