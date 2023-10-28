@@ -107,6 +107,14 @@ function capturePieces(source, target, boardElement) {
 }
 
 
+function showWinner(win_text) {
+    const overlay = document.getElementById('overlay');
+    const winMessage = document.getElementById('winMessage');
+
+    winMessage.textContent = `${win_text}`; // Set the message
+    overlay.classList.remove('hidden'); // Show the overlay
+}
+
 
 function checkForVictory(boardElement) {
     let kingPresent = false;
@@ -123,7 +131,7 @@ function checkForVictory(boardElement) {
                     (cell.cellIndex === 6 && (row.rowIndex === 0 || row.rowIndex === 6))
                 ) {
                     gameOver=true;
-                    alert("Defenders Win! The king has reached a corner.");
+                    showWinner("Defenders Win! The king has reached a corner.");
                     return -1;
                 }
             } else if (cell.textContent === '⚪') {
@@ -134,11 +142,11 @@ function checkForVictory(boardElement) {
 
     if (!kingPresent) {
         gameOver=true;
-        alert("Attackers Win! The king has been captured.");
+        showWinner("Attackers Win! The king has been captured.");
         return 1;
     } else if (attackerCount === 0) {
         gameOver=true;
-        alert("Defenders Win! All attackers have been captured.");
+        showWinner("Defenders Win! All attackers have been captured.");
         return -1;
     }
     return 0;
@@ -244,6 +252,11 @@ function deselectAll(boardElement) {
 function resetBoard() {
     gameOver = false;
 
+    // Remove the "win" overlay.
+    const overlay = document.getElementById('overlay');
+    overlay.classList.add('hidden'); // Show the overlay
+
+
     // Clear the current board content
     boardElement.innerHTML = '';
 
@@ -327,7 +340,7 @@ function makeAIMove() {
         if (move) {
             movePiece(move.piece, move.target);
         }
-    }, 500);    
+    }, 200);    
 }
 
 function togglePlayer() {

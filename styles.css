@@ -10,8 +10,10 @@ body {
 
 #board-and-players {
     width: calc(10 * 100px);
+    position: relative;
     display: flex;
     /* justify-content: center; */
+    justify-content: space-between;
     align-items: center;
 }
 
@@ -106,4 +108,26 @@ tr:nth-child(even) td:nth-child(odd) {
 /* Highlighting for legal squares */
 td.legal-move {
     background-color: #a4d3a3 !important; /* Highlight color */
+}
+
+/* The overlay styles */
+#overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background-color: rgba(0, 0, 0, 0.5); /* Semi-transparent black background */
+    font-size: 50px;
+    font-family: monospace;
+    color: white;
+    z-index: 10; /* Make sure it's on top of other elements */
+}
+
+/* The class that hides elements */
+#overlay.hidden {
+    display: none;
 }
