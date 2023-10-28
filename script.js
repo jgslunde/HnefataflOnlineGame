@@ -181,7 +181,28 @@ function getRandomLegalMove(boardElement, player) {
     };
 }
 
+const aiDifficultyRadioButtons = document.querySelectorAll('input[name="ai-difficulty"]');
+
+function getAIDifficulty() {
+    for (let radioButton of aiDifficultyRadioButtons) {
+        if (radioButton.checked) {
+            return radioButton.value;
+        }
+    }
+}
+
 function getAIBestMove(boardElement, player_str) {
+    const difficulty = getAIDifficulty();
+    let max_depth = 4;
+    if(difficulty == "easy")
+        max_depth = 3
+    if(difficulty == "medium")
+        max_depth = 4
+    if(difficulty == "hard")
+        max_depth = 5
+
+    console.log(max_depth);
+
     let player = player_str === 'attacker'? 1 : -1;
     let board_arr = [];
     for (let row of boardElement.rows) {
@@ -207,7 +228,7 @@ function getAIBestMove(boardElement, player_str) {
     board_dataHeap.set(board_arr);
 
     // Call the C++ function
-    Module._AI_web_get_move(ptr_movefrom_x, ptr_movefrom_y, ptr_moveto_x, ptr_moveto_y, board_ptr, player, 4);
+    Module._AI_web_get_move(ptr_movefrom_x, ptr_movefrom_y, ptr_moveto_x, ptr_moveto_y, board_ptr, player, max_depth);
     let movefrom_x = new Int32Array(Module.HEAP32.buffer, ptr_movefrom_x, 1)[0];
     let movefrom_y = new Int32Array(Module.HEAP32.buffer, ptr_movefrom_y, 1)[0];
     let moveto_x = new Int32Array(Module.HEAP32.buffer, ptr_moveto_x, 1)[0];
@@ -292,7 +313,10 @@ function resetBoard() {
 function movePiece(sourceCell, targetCell) {
     // Move the piece to the new cell
     targetCell.innerText = sourceCell.innerText;
-    capturePieces(sourceCell, targetCell, boardElement);
+    // Introduce a delay before capturing
+    setTimeout(function() {
+        capturePieces(sourceCell, targetCell, boardElement);
+    }, 500);
     sourceCell.innerText = ''; // Clear the old position
     // Clear class of source and destination
     sourceCell.className = '';
@@ -314,14 +338,14 @@ function movePiece(sourceCell, targetCell) {
     // Switch turns
     togglePlayer();
 
-    if ((gameMode[currentPlayer] === 'ai') && (!gameOver)) {
+    if ((gameMode[currentPlayer] === 'AI') && (!gameOver)) {
         makeAIMove();
     }
 }
 
 
 function makeAIMove() {
-    if (gameOver || gameMode[currentPlayer] !== 'ai') {
+    if (gameOver || gameMode[currentPlayer] !== 'AI') {
         return;
     }
     // clearTimeout(aiMoveTimeout); // Clear any existing scheduled AI move
@@ -340,7 +364,7 @@ function makeAIMove() {
         if (move) {
             movePiece(move.piece, move.target);
         }
-    }, 200);    
+    }, 500);    
 }
 
 function togglePlayer() {
@@ -356,8 +380,8 @@ function togglePlayer() {
 let gameOver = false;
 let currentPlayer = 'attacker';
 const gameMode = {
-    attacker: 'human',
-    defender: 'human'
+    attacker: 'Human',
+    defender: 'Human'
 };
 let aiMoveTimeout = null;
 let selectedPiece = null;
@@ -367,7 +391,7 @@ function startGame(attackerMode, defenderMode) {
     resetBoard();
     currentPlayer = 'attacker';
     gameMode = { attacker: attackerMode, defender: defenderMode };
-    if (gameMode[currentPlayer] === 'ai') {
+    if (gameMode[currentPlayer] === 'AI') {
         makeAIMove();
     }
 }
@@ -453,32 +477,32 @@ function resetGame() {
     clearTimeout(aiMoveTimeout);
     resetBoard();
     currentPlayer = 'attacker';
-    if (gameMode[currentPlayer] === 'ai'){
+    if (gameMode[currentPlayer] === 'AI'){
         makeAIMove();
     }
 }
 
 document.getElementById('btn-human-human').addEventListener('click', function() {
-    gameMode.attacker = 'human';
-    gameMode.defender = 'human';
+    gameMode.attacker = 'Human';
+    gameMode.defender = 'Human';
     resetGame();
 });
 
 document.getElementById('btn-human-ai').addEventListener('click', function() {
-    gameMode.attacker = 'human';
-    gameMode.defender = 'ai';
+    gameMode.attacker = 'Human';
+    gameMode.defender = 'AI';
     resetGame();
 });
 
 document.getElementById('btn-ai-human').addEventListener('click', function() {
-    gameMode.attacker = 'ai';
-    gameMode.defender = 'human';
+    gameMode.attacker = 'AI';
+    gameMode.defender = 'Human';
     resetGame();
 });
 
 document.getElementById('btn-ai-ai').addEventListener('click', function() {
-    gameMode.attacker = 'ai';
-    gameMode.defender = 'ai';
+    gameMode.attacker = 'AI';
+    gameMode.defender = 'AI';
     resetGame();
     makeAIMove(); // Start the game with AI's move since attacker goes first
 });

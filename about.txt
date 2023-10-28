@@ -1,0 +1,6 @@
+This favicon was generated using the following font:
+
+- Font Title: Rochester
+- Font Author: Copyright (c) 2010 by Font Diner, Inc DBA Sideshow. All rights reserved. Available under the Apache 2.0 licence. http://www.apache.org/licenses/LICENSE-2.0.html
+- Font Source: http://fonts.gstatic.com/s/rochester/v22/6ae-4KCqVa4Zy6Fif-Uy31vWNTMwoQ.ttf
+- Font License: Apache License, version 2.0 (http://www.apache.org/licenses/LICENSE-2.0.html))

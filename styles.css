@@ -92,13 +92,13 @@ td {
 /* Light squares */
 tr:nth-child(odd) td:nth-child(odd),
 tr:nth-child(even) td:nth-child(even) {
-    background-color: #f0d9b5;
+    background-color: #af9770;
 }
 
 /* Dark squares */
 tr:nth-child(odd) td:nth-child(even),
 tr:nth-child(even) td:nth-child(odd) {
-    background-color: #b58863;
+    background-color: #a37753;
 }
 
 #board td.selected {
@@ -130,4 +130,24 @@ td.legal-move {
 /* The class that hides elements */
 #overlay.hidden {
     display: none;
+}
+
+input[type="radio"] {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    width: 20px;
+    height: 20px;
+    border: 2px solid #999; /* Adjust as desired */
+    vertical-align: middle;
+    cursor: pointer;
+}
+
+input[type="radio"]:checked {
+    background-color: #969696; /* Adjust color as desired */
+    border-color: #333; /* Adjust color as desired */
+}
+
+input[type="radio"]:focus {
+    outline: none;
 }
