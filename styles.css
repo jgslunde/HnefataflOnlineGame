@@ -1,9 +1,70 @@
+body {
+    background-color: black;
+    color: white;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh; /* Take full viewport height */
+    flex-direction: column; /* Stack main items (board+names, buttons) vertically */
+}
+
+#board-and-players {
+    width: calc(10 * 100px);
+    display: flex;
+    /* justify-content: center; */
+    align-items: center;
+}
+
+#player-names {
+    font-size: 36px;
+    font-family: monospace;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between; /* Distribute names evenly, top and bottom */
+    height: 100%; /* Make it take the full height of the container */
+    margin-left: 20px; /* Some spacing from the board */
+}
+
+#buttons-container {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    /* justify-content: center; */
+    width: calc(10 * 100px);
+    margin-top: 30px;
+}
+
+    
+button {
+    width: 120px;
+    height: 100px;
+    font-size: 20px;
+    font-family: monospace;
+    margin-right: 20px; /* Spacing between buttons */
+    background-color: white;
+    color: black;
+    border: none;
+    padding: 10px 20px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+button:last-child {
+    margin-right: 0;
+}
+
+button:hover {
+    background-color: #f0d9b5;
+}
+
+
 table {
     border-collapse: collapse;  /* This ensures that the borders of adjacent cells are merged */
     border: none;  /* Remove table border */
 }
 
 td {
+    cursor: default; /* normal arrow cursor for all cells */
     width: 100px;  /* Increase from previous value */
     height: 100px;  /* Increase from previous value */
     text-align: center;
@@ -11,6 +72,19 @@ td {
     font-size: 40px;  /* Adjust font size to match larger cell size */
     border: none;  /* Remove cell borders */
     transition: background-color 0.3s;  /* Smooth transition for highlighting */
+}
+
+/* For the attacker */
+#board.attacker td.⚪:hover {
+    cursor: pointer;
+    background-color: rgba(50, 50, 50, 0.1);
+}
+
+/* For the defender */
+#board.defender td.⚫:hover, 
+#board.defender td.⬛:hover {
+    cursor: pointer;
+    background-color: rgba(50, 50, 50, 0.1);
 }
 
 /* Light squares */
@@ -23,6 +97,10 @@ tr:nth-child(even) td:nth-child(even) {
 tr:nth-child(odd) td:nth-child(even),
 tr:nth-child(even) td:nth-child(odd) {
     background-color: #b58863;
+}
+
+#board td.selected {
+    background-color: rgba(120, 120, 120, 0.7);  /* Example color; feel free to adjust */
 }
 
 /* Highlighting for legal squares */
