@@ -201,8 +201,6 @@ function getAIBestMove(boardElement, player_str) {
     if(difficulty == "hard")
         max_depth = 5
 
-    console.log(max_depth);
-
     let player = player_str === 'attacker'? 1 : -1;
     let board_arr = [];
     for (let row of boardElement.rows) {
@@ -314,9 +312,7 @@ function movePiece(sourceCell, targetCell) {
     // Move the piece to the new cell
     targetCell.innerText = sourceCell.innerText;
     // Introduce a delay before capturing
-    setTimeout(function() {
-        capturePieces(sourceCell, targetCell, boardElement);
-    }, 300);
+    capturePieces(sourceCell, targetCell, boardElement);
     sourceCell.innerText = ''; // Clear the old position
     // Clear class of source and destination
     sourceCell.className = '';
@@ -331,6 +327,7 @@ function movePiece(sourceCell, targetCell) {
         }
     }
     let win = checkForVictory(boardElement);
+    console.log(win);
     if(win !== 0){
         return;
     }
@@ -364,7 +361,7 @@ function makeAIMove() {
         if (move) {
             movePiece(move.piece, move.target);
         }
-    }, 600);    
+    }, 600);
 }
 
 function togglePlayer() {
