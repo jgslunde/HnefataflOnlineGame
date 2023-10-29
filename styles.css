@@ -9,7 +9,8 @@ body {
 }
 
 #board-and-players {
-    width: calc(9 * 100px);
+    width: 90vh;
+    height: 70vh;
     position: relative;
     display: flex;
     /* justify-content: center; */
@@ -18,13 +19,14 @@ body {
 }
 
 #player-names {
-    font-size: 36px;
+    font-size: 3.2vh;
     font-family: monospace;
     display: flex;
     flex-direction: column;
     justify-content: space-between; /* Distribute names evenly, top and bottom */
     height: 100%; /* Make it take the full height of the container */
     margin-left: 20px; /* Some spacing from the board */
+    align-content: left;
 }
 
 #buttons-container {
@@ -32,21 +34,21 @@ body {
     flex-direction: row;
     align-items: center;
     /* justify-content: center; */
-    width: calc(9 * 100px);
+    width: 90vh;
     margin-top: 30px;
 }
 
     
 button {
-    width: 120px;
-    height: 100px;
-    font-size: 20px;
+    width: 10.5vh;
+    height: 9.5vh;
+    font-size: 1.74vh;
     font-family: monospace;
-    margin-right: 20px; /* Spacing between buttons */
+    margin-right: 2vh; /* Spacing between buttons */
     background-color: white;
     color: black;
     border: none;
-    padding: 10px 20px;
+    padding: 1vh 2vh;
     cursor: pointer;
     transition: background-color 0.3s;
 }
@@ -66,25 +68,25 @@ table {
 }
 
 td {
-    cursor: default; /* normal arrow cursor for all cells */
-    width: 100px;  /* Increase from previous value */
-    height: 100px;  /* Increase from previous value */
+    cursor: default;
+    width: 10vh;
+    height: 10vh;
     text-align: center;
     vertical-align: middle;
-    font-size: 40px;  /* Adjust font size to match larger cell size */
-    border: none;  /* Remove cell borders */
+    font-size: 5vh;
+    border: none;
     transition: background-color 0.3s;  /* Smooth transition for highlighting */
 }
 
 /* For the attacker */
-#board.attacker td.⚪:hover {
+#board.attacker td.⚫:hover {
     cursor: pointer;
     background-color: rgba(50, 50, 50, 0.1);
 }
 
 /* For the defender */
-#board.defender td.⚫:hover, 
-#board.defender td.⬛:hover {
+#board.defender td.⚪:hover, 
+#board.defender td.⬜:hover {
     cursor: pointer;
     background-color: rgba(50, 50, 50, 0.1);
 }
@@ -163,6 +165,20 @@ input[type="radio"]:focus {
     outline: none;
 }
 
+#ai-difficulty-container label {
+    font-size: 1.8vh;
+    font-family: monospace;
+}
+
+
+#attacker-label, #defender-label {
+    color: #868686;
+}
+
+.active-player {
+    font-weight: bold;
+    color: #ffffff !important; /* or any other color you prefer */
+}
 
 
 /* Responsive layout for screens smaller than 768 pixels */
@@ -182,14 +198,16 @@ input[type="radio"]:focus {
         flex-direction: column;
         align-items: center;
         width: 98%;
+        height: 60vh;
     }
     
     #player-names {
         font-size: 24px;
         flex-direction: row;
-        justify-content: space-between;
+        /* justify-content: space-between; */
         width: 100%;
         margin-bottom: 20px; /* Spacing between the labels and the board */
+        height:10vh;
     }
     
     #attacker-label, #defender-label {
@@ -203,7 +221,7 @@ input[type="radio"]:focus {
         align-items: center;
         /* justify-content: center; */
         width: 80%;
-        margin-top: 30px;
+        margin-top: 10px;
     }
 
     button {
