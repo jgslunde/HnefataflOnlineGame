@@ -4965,7 +4965,7 @@ var stackRestore = Module["stackRestore"] = createExportWrapper("stackRestore");
 var stackAlloc = Module["stackAlloc"] = createExportWrapper("stackAlloc");
 
 /** @type {function(...*):?} */
-var dynCall_djjj = Module["dynCall_djjj"] = createExportWrapper("dynCall_djjj");
+var dynCall_fjjj = Module["dynCall_fjjj"] = createExportWrapper("dynCall_fjjj");
 
 /** @type {function(...*):?} */
 var dynCall_viijii = Module["dynCall_viijii"] = createExportWrapper("dynCall_viijii");
