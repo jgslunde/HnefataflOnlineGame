@@ -21,7 +21,33 @@
             <div id="AI-eval" class="hidden"> AI eval:<br>0</div>
             <div id="attacker-label" class="active-player">Attacker:<br>Human</div>
         </div>
-    
+
+        <div id="helpText" class="hidden">
+            <!-- <span id="helpText"> -->
+                <div style=" padding-right:20px;">
+                    Rules:
+                    <br>
+                    <br>
+                    <br>
+                    <br>
+                    <br>
+                    Misc:
+                </div>
+                <div style="font-size:2vh;">
+                    - All pieces (king included) move like rooks in chess, horizontally or vertically as far as they want.<br>
+                    - The attackers (black) win by capturing the white king (the white square).<br>
+                    - The defenders (white) win by escaping with the king to one of the four corners.<br>
+                    - Both sides (king included) captures enemy pieces by, through a move, squizing them in between two of your pieces (horizontally or vertically).<br>
+                    - The four corners can only be occupied by the king, and can also be used as an allied piece in a capture.<br>
+                    <br>
+                    <br>
+                    - There should be a threefold repetition rule, but it's not implemented.<br>
+                    - "AI difficulty" decides how many moves ahead the Hnefatafl AI engine sees. It does the same for the AI evaluation, if "Toggle AI eval" is turned on.<br>
+                    - For "Very Hard", the browser may become unresponsive for a little bit, both for AI play, and AI evaulation.
+                </div>
+            <!-- </span> -->
+        </div>
+
         <div id="overlay" class="hidden">
             <span id="winMessage"></span>
         </div>
@@ -53,6 +79,9 @@
 
         <div id="ai-difficulty-container">
             <button id="AI-eval-toggle-btn">Toggle AI eval</button>
+        </div>
+        <div id="help-container">
+            <button id="help-btn">Help</button>
         </div>
     </div>
 

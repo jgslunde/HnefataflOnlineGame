@@ -516,6 +516,18 @@ function resetGame() {
     }
 }
 
+document.getElementById('help-btn').addEventListener('click', function() {
+    var helpText = document.getElementById('helpText');
+    if (helpText.classList.contains('hidden')) {
+        helpText.classList.remove('hidden');
+        getAIBestMove(boardElement, currentPlayer);
+    } else {
+        helpText.classList.add('hidden');
+    }
+});
+
+
+
 document.getElementById('btn-human-human').addEventListener('click', function() {
     gameMode.attacker = 'Human';
     gameMode.defender = 'Human';
