@@ -520,7 +520,6 @@ document.getElementById('help-btn').addEventListener('click', function() {
     var helpText = document.getElementById('helpText');
     if (helpText.classList.contains('hidden')) {
         helpText.classList.remove('hidden');
-        getAIBestMove(boardElement, currentPlayer);
     } else {
         helpText.classList.add('hidden');
     }
