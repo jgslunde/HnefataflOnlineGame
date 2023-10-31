@@ -10,7 +10,7 @@ body {
 
 #board-and-players {
     width: 90vh;
-    height: 70vh;
+    height: 73vh;
     position: relative;
     display: flex;
     /* justify-content: center; */
@@ -27,6 +27,7 @@ body {
     height: 100%; /* Make it take the full height of the container */
     margin-left: 20px; /* Some spacing from the board */
     align-content: left;
+    height: 70vh;
 }
 
 #buttons-container {
@@ -170,6 +171,14 @@ input[type="radio"]:focus {
     font-family: monospace;
 }
 
+#ai-difficulty-container {
+    width: 18vh;
+}
+
+.hidden {
+    display: none;
+}
+
 
 #attacker-label, #defender-label {
     color: #868686;
@@ -221,6 +230,7 @@ input[type="radio"]:focus {
         align-items: center;
         /* justify-content: center; */
         width: 80%;
+        height: 20vh;
         margin-top: 10px;
     }
 

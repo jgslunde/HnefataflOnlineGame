@@ -17,7 +17,8 @@
         </table>
         
         <div id="player-names">
-            <div id="defender-label">Defender:<br>AI</div>            
+            <div id="defender-label">Defender:<br>AI</div>
+            <div id="AI-eval" class="hidden"> AI eval:<br>0</div>
             <div id="attacker-label" class="active-player">Attacker:<br>Human</div>
         </div>
     
@@ -44,6 +45,14 @@
             <label>
                 <input type="radio" name="ai-difficulty" value="hard"> Hard
             </label>
+            <br>
+            <label>
+                <input type="radio" name="ai-difficulty" value="veryhard"> Very Hard
+            </label>
+        </div>
+
+        <div id="ai-difficulty-container">
+            <button id="AI-eval-toggle-btn">Toggle AI eval</button>
         </div>
     </div>
 

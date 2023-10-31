@@ -182,6 +182,16 @@ function getRandomLegalMove(boardElement, player) {
 }
 
 const aiDifficultyRadioButtons = document.querySelectorAll('input[name="ai-difficulty"]');
+// const aiShowEvalRadioButtons = document.querySelectorAll('input[name="ai-show-eval"]');
+document.getElementById('AI-eval-toggle-btn').addEventListener('click', function() {
+    var aiEval = document.getElementById('AI-eval');
+    if (aiEval.classList.contains('hidden')) {
+        aiEval.classList.remove('hidden');
+        getAIBestMove(boardElement, currentPlayer);
+    } else {
+        aiEval.classList.add('hidden');
+    }
+});
 
 function getAIDifficulty() {
     for (let radioButton of aiDifficultyRadioButtons) {
@@ -200,6 +210,8 @@ function getAIBestMove(boardElement, player_str) {
         max_depth = 4
     if(difficulty == "hard")
         max_depth = 5
+    if(difficulty == "veryhard")
+        max_depth = 6
 
     let player = player_str === 'attacker'? 1 : -1;
     let board_arr = [];
@@ -217,6 +229,7 @@ function getAIBestMove(boardElement, player_str) {
     }
     let size = board_arr.length;
 
+    let ptr_eval = Module._malloc(4);
     let ptr_movefrom_x = Module._malloc(4);
     let ptr_movefrom_y = Module._malloc(4);
     let ptr_moveto_x = Module._malloc(4);
@@ -226,12 +239,22 @@ function getAIBestMove(boardElement, player_str) {
     board_dataHeap.set(board_arr);
 
     // Call the C++ function
-    Module._AI_web_get_move(ptr_movefrom_x, ptr_movefrom_y, ptr_moveto_x, ptr_moveto_y, board_ptr, player, max_depth);
+    Module._AI_web_get_move(ptr_eval, ptr_movefrom_x, ptr_movefrom_y, ptr_moveto_x, ptr_moveto_y, board_ptr, player, max_depth);
+    computer_eval = new Float32Array(Module.HEAP32.buffer, ptr_eval, 1)[0];
     let movefrom_x = new Int32Array(Module.HEAP32.buffer, ptr_movefrom_x, 1)[0];
     let movefrom_y = new Int32Array(Module.HEAP32.buffer, ptr_movefrom_y, 1)[0];
     let moveto_x = new Int32Array(Module.HEAP32.buffer, ptr_moveto_x, 1)[0];
     let moveto_y = new Int32Array(Module.HEAP32.buffer, ptr_moveto_y, 1)[0];
-    
+
+    console.log(computer_eval);
+    if(computer_eval > 500){
+        document.getElementById('AI-eval').innerHTML = `AI eval:<br>black<br>winning`;
+    }else if(computer_eval < -500){
+        document.getElementById('AI-eval').innerHTML = `AI eval:<br>white<br>winning`;
+    }else{
+        document.getElementById('AI-eval').innerHTML = `AI eval:<br>${computer_eval.toFixed(2)}`;
+    }
+
     return {
         piece: boardElement.rows[movefrom_y].cells[movefrom_x],
         target: boardElement.rows[moveto_y].cells[moveto_x]
@@ -270,6 +293,8 @@ function deselectAll(boardElement) {
 
 function resetBoard() {
     gameOver = false;
+    computer_eval = 0.0;
+    document.getElementById('AI-eval').innerHTML = `AI eval:<br>${computer_eval.toFixed(2)}`;
 
     // Remove the "win" overlay.
     const overlay = document.getElementById('overlay');
@@ -333,9 +358,10 @@ function movePiece(sourceCell, targetCell) {
 
     // Switch turns
     togglePlayer();
-
     if ((gameMode[currentPlayer] === 'AI') && (!gameOver)) {
         makeAIMove();
+    }else if(!document.getElementById("AI-eval").classList.contains('hidden')){
+        getAIBestMove(boardElement, currentPlayer);
     }
 }
 
@@ -393,7 +419,7 @@ const gameMode = {
 };
 let aiMoveTimeout = null;
 let selectedPiece = null;
-
+let computer_eval = 0.0;
 
 function startGame(attackerMode, defenderMode) {
     resetBoard();
