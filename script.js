@@ -3,6 +3,28 @@ Module['onRuntimeInitialized'] = function() {
     console.log("Emscripten module loaded.")
 };
 
+// Helper function to get the piece character from a cell, ignoring policy overlay
+function getPieceFromCell(cell) {
+    for (let node of cell.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            return node.textContent.trim();
+        }
+    }
+    return '';
+}
+
+// Helper function to set the piece character in a cell, preserving policy overlay
+function setPieceInCell(cell, piece) {
+    for (let node of cell.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            node.textContent = piece;
+            return;
+        }
+    }
+    // If no text node exists, create one
+    const textNode = document.createTextNode(piece);
+    cell.insertBefore(textNode, cell.firstChild);
+}
 
 function isDefender(piece) {
     return ['⚪', '⬜'].includes(piece);
@@ -19,7 +41,7 @@ function squaresBetweenAreEmpty(source, target, boardElement) {
         const endCol = Math.max(sourceCol, targetCol);
 
         for (let col = startCol + 1; col < endCol; col++) {
-            if (boardElement.rows[sourceRow].cells[col].innerText !== '') {
+            if (getPieceFromCell(boardElement.rows[sourceRow].cells[col]) !== '') {
                 return false;
             }
         }
@@ -28,7 +50,7 @@ function squaresBetweenAreEmpty(source, target, boardElement) {
         const endRow = Math.max(sourceRow, targetRow);
 
         for (let row = startRow + 1; row < endRow; row++) {
-            if (boardElement.rows[row].cells[sourceCol].innerText !== '') {
+            if (getPieceFromCell(boardElement.rows[row].cells[sourceCol]) !== '') {
                 return false;
             }
         }
@@ -39,7 +61,8 @@ function squaresBetweenAreEmpty(source, target, boardElement) {
 
 function isValidMove(source, target, boardElement) {
     // Check if moving onto another piece
-    if (['⚫', '⚪', '⬜'].includes(target.innerText)) {
+    const targetPiece = getPieceFromCell(target);
+    if (['⚫', '⚪', '⬜'].includes(targetPiece)) {
         return false;
     }
 
@@ -62,7 +85,8 @@ function isValidMove(source, target, boardElement) {
 
     // Check for restricted corner squares
     const isCornerSquare = (row, col) => (row === 0 || row === 6) && (col === 0 || col === 6);
-    if (isCornerSquare(targetRow, targetCol) && source.innerText !== '⬜') {
+    const sourcePiece = getPieceFromCell(source);
+    if (isCornerSquare(targetRow, targetCol) && sourcePiece !== '⬜') {
         return false;
     }
 
@@ -95,13 +119,17 @@ function capturePieces(source, target, boardElement) {
 
         const enemyCell = boardElement.rows[enemyRow].cells[enemyCol];
         const allyCell = boardElement.rows[allyRow].cells[allyCol];
+        
+        const targetPiece = getPieceFromCell(target);
+        const enemyPiece = getPieceFromCell(enemyCell);
+        const allyPiece = getPieceFromCell(allyCell);
 
-        if (target.innerText === '⚫' && enemyCell.innerText === '⚪' && (allyCell.innerText === '⚫' || isRestrictedSquare(allyRow, allyCol))) {
-            enemyCell.innerText = '';  // Capture the defender
-        } else if ((target.innerText === '⚪' || target.innerText === '⬜') && enemyCell.innerText === '⚫' && (isDefender(allyCell.innerText) || isRestrictedSquare(allyRow, allyCol))) {
-            enemyCell.innerText = '';  // Capture the attacker
-        } else if (target.innerText === '⚫' && enemyCell.innerText === '⬜' && (allyCell.innerText === '⚫' || isRestrictedSquare(allyRow, allyCol))) {
-            enemyCell.innerText = '';  // Capture the king
+        if (targetPiece === '⚫' && enemyPiece === '⚪' && (allyPiece === '⚫' || isRestrictedSquare(allyRow, allyCol))) {
+            setPieceInCell(enemyCell, '');  // Capture the defender
+        } else if ((targetPiece === '⚪' || targetPiece === '⬜') && enemyPiece === '⚫' && (isDefender(allyPiece) || isRestrictedSquare(allyRow, allyCol))) {
+            setPieceInCell(enemyCell, '');  // Capture the attacker
+        } else if (targetPiece === '⚫' && enemyPiece === '⬜' && (allyPiece === '⚫' || isRestrictedSquare(allyRow, allyCol))) {
+            setPieceInCell(enemyCell, '');  // Capture the king
         }
     }
 }
@@ -157,8 +185,9 @@ function getRandomLegalMove(boardElement, player) {
     const pieces = [];
     for (let row of boardElement.rows) {
         for (let cell of row.cells) {
-            if ((player === 'attacker' && cell.innerText === '⚫') || 
-                (player === 'defender' && (cell.innerText === '⚪' || cell.innerText === '⬜'))) {
+            const piece = getPieceFromCell(cell);
+            if ((player === 'attacker' && piece === '⚫') || 
+                (player === 'defender' && (piece === '⚪' || piece === '⬜'))) {
                 pieces.push(cell);
             }
         }
@@ -228,11 +257,12 @@ function getAIBestMove(boardElement, player_str) {
     let board_arr = [];
     for (let row of boardElement.rows) {
         for (let cell of row.cells) {
-            if(cell.innerText === '⚫')
+            const piece = getPieceFromCell(cell);
+            if(piece === '⚫')
                 board_arr.push(1);
-            else if(cell.innerText === '⚪')
+            else if(piece === '⚪')
                 board_arr.push(2);
-            else if(cell.innerText === '⬜')
+            else if(piece === '⬜')
                 board_arr.push(3);
             else
                 board_arr.push(0);
@@ -390,15 +420,16 @@ function resetBoard() {
 
 function movePiece(sourceCell, targetCell) {
     // Move the piece to the new cell
-    targetCell.innerText = sourceCell.innerText;
+    const piece = getPieceFromCell(sourceCell);
+    setPieceInCell(targetCell, piece);
     // Introduce a delay before capturing
     capturePieces(sourceCell, targetCell, boardElement);
-    sourceCell.innerText = ''; // Clear the old position
+    setPieceInCell(sourceCell, ''); // Clear the old position
     // Clear class of source and destination
     sourceCell.className = '';
     targetCell.className = '';
     // Add appropriate class to the destination
-    targetCell.classList.add(targetCell.innerText);
+    targetCell.classList.add(piece);
 
 
     for (let row of boardElement.rows) {
@@ -483,6 +514,11 @@ function togglePlayer() {
         defenderLabel.classList.add('active-player');
         attackerLabel.classList.remove('active-player');
     }
+    
+    // Refresh policy visualization for new player
+    if (policyVisualizationEnabled) {
+        updatePolicyVisualization();
+    }
 }
 
 let gameOver = false;
@@ -507,7 +543,15 @@ function startGame(attackerMode, defenderMode) {
 // Event listener for piece selection or movement
 function handleCellClick(event) {
     if (gameOver) return;
-    const cell = event.target;
+    
+    // Get the td cell, even if clicking on child elements (like policy overlay)
+    let cell = event.target;
+    if (cell.tagName !== 'TD') {
+        cell = cell.closest('td');
+    }
+    if (!cell) return;
+    
+    const piece = getPieceFromCell(cell);
     
     // If a piece is already selected
     if (selectedPiece) {
@@ -516,28 +560,43 @@ function handleCellClick(event) {
             removeHighlights(boardElement); // Remove any move highlights
             cell.classList.remove('selected');  // Remove the 'selected' class
             selectedPiece = null;
+            
+            // Update policy visualization to show all pieces (no need to recompute)
+            if (policyVisualizationEnabled && currentPolicyData) {
+                visualizePolicyForAllPieces();
+            }
             return;
         }
 
         // If trying to select another piece of the same player
-        if (currentPlayer === 'attacker' && cell.innerText === '⚫') {
+        if (currentPlayer === 'attacker' && piece === '⚫') {
             removeHighlights(boardElement); // Remove any move highlights
             deselectAll(boardElement);
             cell.classList.add('selected');  // Add the 'selected' class
             highlightLegalMoves(cell, boardElement);
             selectedPiece = cell;
+            
+            // Update policy visualization for this piece
+            if (policyVisualizationEnabled) {
+                visualizePolicyForPiece(cell);
+            }
             return;
-        } else if (currentPlayer === 'defender' && isDefender(cell.innerText)) {
+        } else if (currentPlayer === 'defender' && isDefender(piece)) {
             removeHighlights(boardElement); // Remove any move highlights
             deselectAll(boardElement);
             cell.classList.add('selected');  // Add the 'selected' class
             highlightLegalMoves(cell, boardElement);
             selectedPiece = cell;
+            
+            // Update policy visualization for this piece
+            if (policyVisualizationEnabled) {
+                visualizePolicyForPiece(cell);
+            }
             return;
         }
 
         // If making a move to an empty square
-        if (!cell.innerText) {
+        if (!piece) {
             if (!isValidMove(selectedPiece, cell, boardElement)) {
                 return;
             }
@@ -545,23 +604,37 @@ function handleCellClick(event) {
             removeHighlights(boardElement); // Remove move highlights after moving
             selectedPiece.classList.remove('selected');  // Remove the 'selected' class
             selectedPiece = null;
+            
+            // Clear policy data after move (will need to recompute)
+            currentPolicyData = null;
+            if (policyVisualizationEnabled) {
+                clearPolicyVisualization();
+            }
             return;
         }
     }
 
     // If a piece is not selected and the clicked cell has a piece
-    if (currentPlayer === 'attacker' && cell.innerText === '⚫') {
+    if (currentPlayer === 'attacker' && piece === '⚫') {
         selectedPiece = cell; // Mark the piece as selected
         highlightLegalMoves(cell, boardElement);        
         cell.classList.add('selected');  // Add the 'selected' class
-    } else if (currentPlayer === 'defender' && isDefender(cell.innerText)) {
+        
+        // Update policy visualization for this piece
+        if (policyVisualizationEnabled) {
+            visualizePolicyForPiece(cell);
+        }
+    } else if (currentPlayer === 'defender' && isDefender(piece)) {
         highlightLegalMoves(cell, boardElement);    
         selectedPiece = cell; // Mark the piece as selected
         cell.classList.add('selected');  // Add the 'selected' class
+        
+        // Update policy visualization for this piece
+        if (policyVisualizationEnabled) {
+            visualizePolicyForPiece(cell);
+        }
     }
 }
-
-
 function removeHighlights(boardElement) {
     const cells = boardElement.querySelectorAll('td');
     cells.forEach(cell => {
@@ -599,7 +672,22 @@ document.getElementById('help-btn').addEventListener('click', function() {
     }
 });
 
-
+/**
+ * Convert board HTML element to 2D array representation
+ * @param {HTMLTableElement} boardElement 
+ * @returns {Array<Array<string>>} 7x7 board array
+ */
+function getBoardState(boardElement) {
+    const board = [];
+    for (let r = 0; r < 7; r++) {
+        const row = [];
+        for (let c = 0; c < 7; c++) {
+            row.push(boardElement.rows[r].cells[c].innerText);
+        }
+        board.push(row);
+    }
+    return board;
+}
 
 document.getElementById('btn-human-human').addEventListener('click', function() {
     gameMode.attacker = 'Human';
@@ -627,6 +715,11 @@ document.getElementById('btn-ai-ai').addEventListener('click', function() {
 });
 
 const boardElement = document.getElementById('board');
+
+// Policy visualization state
+let policyVisualizationEnabled = false;
+let policySource = 'network'; // 'network' or 'mcts'
+let currentPolicyData = null; // Stores {policy: Float32Array, visitCounts: Map}
 
 // Initialize MCTS agent on page load
 console.log("[Script] Initializing MCTS agent on page load...");
@@ -677,3 +770,204 @@ document.addEventListener('DOMContentLoaded', function() {
     boardElement.className = "attacker";
     updatePlayerRoles(gameMode["attacker"], gameMode["defender"]);
 });
+
+// Policy visualization toggle button
+document.getElementById('policy-viz-toggle-btn').addEventListener('click', function() {
+    policyVisualizationEnabled = !policyVisualizationEnabled;
+    this.textContent = policyVisualizationEnabled ? 'Hide Policy' : 'Show Policy';
+    
+    // Show/hide the policy source toggle button
+    const sourceBtn = document.getElementById('policy-source-toggle-btn');
+    if (policyVisualizationEnabled && getAIType() === 'mcts') {
+        sourceBtn.classList.remove('hidden');
+    } else {
+        sourceBtn.classList.add('hidden');
+    }
+    
+    if (policyVisualizationEnabled) {
+        updatePolicyVisualization();
+    } else {
+        clearPolicyVisualization();
+    }
+});
+
+// Policy source toggle button (Network vs MCTS)
+document.getElementById('policy-source-toggle-btn').addEventListener('click', function() {
+    policySource = policySource === 'network' ? 'mcts' : 'network';
+    this.innerHTML = `Policy Source:<br>${policySource === 'network' ? 'Network' : 'MCTS'}`;
+    
+    // Clear cached policy data to force recomputation
+    currentPolicyData = null;
+    
+    if (policyVisualizationEnabled) {
+        updatePolicyVisualization();
+    }
+});
+
+/**
+ * Update policy visualization on the board
+ */
+async function updatePolicyVisualization() {
+    const aiType = getAIType();
+    
+    // Only works with MCTS
+    if (aiType !== 'mcts') {
+        console.log("[Policy Viz] Not available for tree-search AI");
+        clearPolicyVisualization();
+        return;
+    }
+    
+    try {
+        // Get policy and optionally MCTS data
+        if (policySource === 'network') {
+            // Always get fresh network policy when in network mode
+            const result = await window.mctsAgent.getPolicy(boardElement, currentPlayer);
+            currentPolicyData = {
+                policy: result.policy,
+                visitCounts: null
+            };
+        } else {
+            // Get MCTS visit counts (run a quick search)
+            const difficulty = getAIDifficulty();
+            const simCount = { easy: 50, medium: 100, hard: 150, veryhard: 200 }[difficulty] || 100;
+            
+            const result = await window.mctsAgent.getBestMove(boardElement, currentPlayer, simCount);
+            if (result && result.policyData) {
+                currentPolicyData = result.policyData; // Contains both policy and visitCounts
+            } else {
+                console.error("[Policy Viz] getBestMove returned null or no policy data");
+                // Fall back to network policy
+                const networkResult = await window.mctsAgent.getPolicy(boardElement, currentPlayer);
+                currentPolicyData = {
+                    policy: networkResult.policy,
+                    visitCounts: null
+                };
+            }
+        }
+        
+        // Visualize based on selected piece
+        if (selectedPiece) {
+            visualizePolicyForPiece(selectedPiece);
+        } else {
+            visualizePolicyForAllPieces();
+        }
+    } catch (error) {
+        console.error("[Policy Viz] Error:", error);
+        clearPolicyVisualization();
+    }
+}
+
+/**
+ * Visualize policy probabilities for selecting each piece
+ */
+function visualizePolicyForAllPieces() {
+    if (!currentPolicyData) return;
+    
+    clearPolicyVisualization();
+    
+    const encoder = new MoveEncoder();
+    const legalMoves = encoder.getAllLegalMoves(boardElement, currentPlayer);
+    
+    console.log(`[Policy Viz] visualizePolicyForAllPieces: ${legalMoves.length} legal moves`);
+    
+    // Group moves by source piece
+    const pieceProbs = new Map(); // Map from "row,col" to probability/count
+    
+    for (const move of legalMoves) {
+        const moveIdx = encoder.encodeMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+        let prob;
+        
+        if (policySource === 'mcts' && currentPolicyData.visitCounts) {
+            // Use MCTS visit counts (raw counts, not normalized yet)
+            prob = currentPolicyData.visitCounts.get(moveIdx) || 0;
+        } else {
+            // Use raw network policy (already probabilities)
+            prob = currentPolicyData.policy[moveIdx] || 0;
+        }
+        
+        const key = `${move.fromRow},${move.fromCol}`;
+        pieceProbs.set(key, (pieceProbs.get(key) || 0) + prob);
+    }
+    
+    console.log(`[Policy Viz] Piece probabilities/counts:`, Array.from(pieceProbs.entries()).slice(0, 5));
+    
+    // Normalize to get percentages
+    const total = Array.from(pieceProbs.values()).reduce((a, b) => a + b, 0);
+    console.log(`[Policy Viz] Total: ${total}, Source: ${policySource}`);
+    
+    if (total > 0) {
+        for (const [key, value] of pieceProbs.entries()) {
+            const percentage = ((value / total) * 100).toFixed(1);
+            const [row, col] = key.split(',').map(Number);
+            const cell = boardElement.rows[row].cells[col];
+            console.log(`[Policy Viz] Piece at (${row},${col}): value=${value}, percentage=${percentage}%`);
+            showPolicyOnCell(cell, percentage);
+        }
+    }
+}
+
+/**
+ * Visualize policy probabilities for moves from a selected piece
+ */
+function visualizePolicyForPiece(pieceCell) {
+    if (!currentPolicyData) return;
+    
+    clearPolicyVisualization();
+    
+    const encoder = new MoveEncoder();
+    const fromRow = pieceCell.parentNode.rowIndex;
+    const fromCol = pieceCell.cellIndex;
+    
+    const legalMoves = encoder.getAllLegalMoves(boardElement, currentPlayer)
+        .filter(m => m.fromRow === fromRow && m.fromCol === fromCol);
+    
+    // Get probabilities for each move
+    const moveProbs = new Map();
+    
+    for (const move of legalMoves) {
+        const moveIdx = encoder.encodeMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+        let prob;
+        
+        if (policySource === 'mcts' && currentPolicyData.visitCounts) {
+            prob = currentPolicyData.visitCounts.get(moveIdx) || 0;
+        } else {
+            prob = currentPolicyData.policy[moveIdx] || 0;
+        }
+        
+        moveProbs.set(`${move.toRow},${move.toCol}`, prob);
+    }
+    
+    // Normalize to get percentages
+    const total = Array.from(moveProbs.values()).reduce((a, b) => a + b, 0);
+    if (total > 0) {
+        for (const [key, value] of moveProbs.entries()) {
+            const percentage = ((value / total) * 100).toFixed(1);
+            const [row, col] = key.split(',').map(Number);
+            const cell = boardElement.rows[row].cells[col];
+            showPolicyOnCell(cell, percentage);
+        }
+    }
+}
+
+/**
+ * Display policy percentage on a cell
+ */
+function showPolicyOnCell(cell, percentage) {
+    // Create or update overlay div
+    let overlay = cell.querySelector('.policy-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.className = 'policy-overlay';
+        overlay.style.pointerEvents = 'none';  // Ensure clicks pass through
+        cell.appendChild(overlay);
+    }
+    overlay.textContent = `${percentage}%`;
+}
+
+/**
+ * Clear all policy visualizations
+ */
+function clearPolicyVisualization() {
+    const overlays = boardElement.querySelectorAll('.policy-overlay');
+    overlays.forEach(overlay => overlay.remove());
+}

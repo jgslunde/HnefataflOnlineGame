@@ -140,7 +140,7 @@ class MCTSAgent {
      * @param {HTMLTableElement} boardElement 
      * @param {string} player - 'attacker' or 'defender'
      * @param {number} numSimulations - number of MCTS simulations (optional, uses current setting if not provided)
-     * @returns {Object} {piece, target} - cells to move from/to
+     * @returns {Object} {piece, target, policyData} - cells to move from/to and policy information
      */
     async getBestMove(boardElement, player, numSimulations = null) {
         if (!this.isReady) {
@@ -157,11 +157,113 @@ class MCTSAgent {
         
         try {
             const move = await this.mcts.selectMove(boardElement, player, 0.0);
+            
+            // Include policy data from the search
+            if (move && this.mcts.root) {
+                const visitCounts = new Map();
+                // Convert moveKey (string "r,c,r,c") to moveIdx (integer 0-1175)
+                for (const [moveKey, child] of this.mcts.root.children.entries()) {
+                    const [fromRow, fromCol, toRow, toCol] = moveKey.split(',').map(Number);
+                    const moveIdx = this.moveEncoder.encodeMove(fromRow, fromCol, toRow, toCol);
+                    visitCounts.set(moveIdx, child.visitCount);
+                }
+                
+                move.policyData = {
+                    policy: this.mcts.lastRawPolicy || new Float32Array(1176),
+                    visitCounts: visitCounts
+                };
+            }
+            
             return move;
         } catch (error) {
             console.error("[MCTSAgent] Error selecting move:", error);
             return null;
         }
+    }
+    
+    /**
+     * Get raw policy output from the neural network for the current position
+     * @param {HTMLTableElement} boardElement 
+     * @param {string} player 
+     * @returns {Object} {policy: Float32Array, value: number}
+     */
+    async getPolicy(boardElement, player) {
+        if (!this.isReady) {
+            console.error("[MCTSAgent] Agent not ready.");
+            return null;
+        }
+        
+        console.log(`[MCTSAgent] getPolicy called for ${player}`);
+        
+        try {
+            // Get state representation (same as MCTS.getStateRepresentation)
+            const state = this.getStateRepresentation(boardElement, player);
+            
+            // Run inference
+            const feeds = { input: new ort.Tensor('float32', state, [1, 4, 7, 7]) };
+            const results = await this.session.run(feeds);
+            
+            // Extract outputs
+            const policyOutput = results.policy || results.output0 || results[this.session.outputNames[0]];
+            const valueOutput = results.value || results.output1 || results[this.session.outputNames[1]];
+            
+            const policy = new Float32Array(policyOutput.data);
+            const value = valueOutput.data[0];
+            
+            console.log(`[MCTSAgent] Raw policy retrieved, value: ${value.toFixed(3)}`);
+            
+            return { policy, value };
+            
+        } catch (error) {
+            console.error("[MCTSAgent] Error getting policy:", error);
+            return null;
+        }
+    }
+    
+    /**
+     * Get state representation for neural network
+     * Returns 4 planes: [attackers, defenders, king, current_player_plane]
+     * @param {HTMLTableElement} boardElement 
+     * @param {string} player 
+     * @returns {Float32Array} array of shape (4, 7, 7) = 196 elements
+     */
+    getStateRepresentation(boardElement, player) {
+        const state = new Float32Array(4 * 7 * 7);
+        
+        const attackersPlane = 0;
+        const defendersPlane = 49;
+        const kingPlane = 98;
+        const playerPlane = 147;
+        
+        const playerValue = player === 'attacker' ? 0.0 : 1.0;
+        
+        for (let r = 0; r < 7; r++) {
+            for (let c = 0; c < 7; c++) {
+                const cell = boardElement.rows[r].cells[c];
+                const idx = r * 7 + c;
+                
+                // Get the first text node (ignore policy overlay divs)
+                let piece = '';
+                for (let node of cell.childNodes) {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        piece = node.textContent.trim();
+                        break;
+                    }
+                }
+                
+                if (piece === '⚫') {
+                    state[attackersPlane + idx] = 1.0;
+                } else if (piece === '⚪') {
+                    state[defendersPlane + idx] = 1.0;
+                } else if (piece === '⬜') {
+                    state[kingPlane + idx] = 1.0;
+                }
+                
+                state[playerPlane + idx] = playerValue;
+            }
+        }
+        
+        return state;
     }
     
     /**
@@ -204,17 +306,17 @@ class MCTSAgent {
 }
 
 // Create global instance
-let mctsAgent = null;
+window.mctsAgent = null;
 
 /**
  * Get or create the global MCTS agent instance
  * @returns {MCTSAgent}
  */
 function getMCTSAgent() {
-    if (!mctsAgent) {
-        mctsAgent = new MCTSAgent();
+    if (!window.mctsAgent) {
+        window.mctsAgent = new MCTSAgent();
     }
-    return mctsAgent;
+    return window.mctsAgent;
 }
 
 /**

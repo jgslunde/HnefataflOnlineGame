@@ -14,6 +14,16 @@
  * Policy index: from_square * 24 + direction * 6 + (distance - 1)
  */
 
+// Helper function to get piece from cell, ignoring policy overlay divs
+function getPieceFromCell(cell) {
+    for (let node of cell.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            return node.textContent.trim();
+        }
+    }
+    return '';
+}
+
 class MoveEncoder {
     constructor() {
         // Direction mappings
@@ -54,7 +64,8 @@ class MoveEncoder {
         
         const policyIndex = fromSquare * 24 + direction * 6 + (distance - 1);
         
-        console.log(`[MoveEncoder] Encoded move (${fromRow},${fromCol})->(${toRow},${toCol}) as index ${policyIndex}`);
+        // Reduced logging - only uncomment for debugging
+        // console.log(`[MoveEncoder] Encoded move (${fromRow},${fromCol})->(${toRow},${toCol}) as index ${policyIndex}`);
         return policyIndex;
     }
     
@@ -92,8 +103,9 @@ class MoveEncoder {
         const pieces = [];
         for (let row of boardElement.rows) {
             for (let cell of row.cells) {
-                if ((player === 'attacker' && cell.innerText === '⚫') || 
-                    (player === 'defender' && (cell.innerText === '⚪' || cell.innerText === '⬜'))) {
+                const piece = getPieceFromCell(cell);
+                if ((player === 'attacker' && piece === '⚫') || 
+                    (player === 'defender' && (piece === '⚪' || piece === '⬜'))) {
                     pieces.push(cell);
                 }
             }
@@ -124,7 +136,7 @@ class MoveEncoder {
                     if (isValidMove(piece, targetCell, boardElement)) {
                         const policyIndex = this.encodeMove(fromRow, fromCol, toRow, toCol);
                         mask[policyIndex] = 1.0;
-                    } else if (targetCell.innerText !== '') {
+                    } else if (getPieceFromCell(targetCell) !== '') {
                         // Blocked by a piece, can't move further in this direction
                         break;
                     }
@@ -150,8 +162,9 @@ class MoveEncoder {
         // Get all pieces for current player
         for (let row of boardElement.rows) {
             for (let cell of row.cells) {
-                if ((player === 'attacker' && cell.innerText === '⚫') || 
-                    (player === 'defender' && (cell.innerText === '⚪' || cell.innerText === '⬜'))) {
+                const piece = getPieceFromCell(cell);
+                if ((player === 'attacker' && piece === '⚫') || 
+                    (player === 'defender' && (piece === '⚪' || piece === '⬜'))) {
                     
                     const fromRow = cell.parentNode.rowIndex;
                     const fromCol = cell.cellIndex;
@@ -176,7 +189,7 @@ class MoveEncoder {
                             if (isValidMove(cell, targetCell, boardElement)) {
                                 const policyIndex = this.encodeMove(fromRow, fromCol, toRow, toCol);
                                 moves.push({ fromRow, fromCol, toRow, toCol, policyIndex });
-                            } else if (targetCell.innerText !== '') {
+                            } else if (getPieceFromCell(targetCell) !== '') {
                                 // Blocked by a piece
                                 break;
                             }

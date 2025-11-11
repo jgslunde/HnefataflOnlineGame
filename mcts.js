@@ -197,6 +197,7 @@ class MCTS {
         this.numSimulations = numSimulations;
         this.cPuct = cPuct;
         this.root = null;
+        this.lastRawPolicy = null; // Store last raw policy output for visualization
         
         console.log(`[MCTS] Initialized with ${numSimulations} simulations, c_puct=${cPuct}`);
     }
@@ -237,9 +238,15 @@ class MCTS {
         const elapsedTime = ((performance.now() - startTime) / 1000).toFixed(2);
         console.log(`[MCTS] Search completed in ${elapsedTime}s`);
         console.log(`[MCTS] Root visits: ${this.root.visitCount}, Mean value: ${this.root.meanValue.toFixed(3)}`);
+        console.log(`[MCTS] Root children count: ${this.root.children.size}`);
         
         // Get visit distribution
         const distribution = this.root.getVisitDistribution();
+        
+        console.log(`[MCTS] Distribution size: ${distribution.size}`);
+        if (distribution.size === 0) {
+            console.error("[MCTS] ERROR: Distribution is empty despite having children!");
+        }
         
         // Log top moves
         const sortedMoves = Array.from(distribution.entries())
@@ -338,6 +345,9 @@ class MCTS {
         const policyLogits = results.policy.data;  // Shape: (1, 1176)
         const value = results.value.data[0];  // Shape: (1, 1)
         
+        // Store raw policy for visualization
+        this.lastRawPolicy = new Float32Array(policyLogits);
+        
         // Mask illegal moves
         const legalMask = this.moveEncoder.getLegalMoveMask(boardElement, player);
         const maskedLogits = new Float32Array(1176);
@@ -373,11 +383,20 @@ class MCTS {
                 const cell = boardElement.rows[r].cells[c];
                 const idx = r * 7 + c;
                 
-                if (cell.innerText === '⚫') {
+                // Get the first text node (ignore policy overlay divs)
+                let piece = '';
+                for (let node of cell.childNodes) {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        piece = node.textContent.trim();
+                        break;
+                    }
+                }
+                
+                if (piece === '⚫') {
                     state[attackersPlane + idx] = 1.0;
-                } else if (cell.innerText === '⚪') {
+                } else if (piece === '⚪') {
                     state[defendersPlane + idx] = 1.0;
-                } else if (cell.innerText === '⬜') {
+                } else if (piece === '⬜') {
                     state[kingPlane + idx] = 1.0;
                 }
                 
@@ -607,7 +626,16 @@ class MCTS {
         
         for (let row of boardElement.rows) {
             for (let cell of row.cells) {
-                if (cell.textContent === '⬜') {
+                // Get the first text node (ignore policy overlay divs)
+                let piece = '';
+                for (let node of cell.childNodes) {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        piece = node.textContent.trim();
+                        break;
+                    }
+                }
+                
+                if (piece === '⬜') {
                     kingPresent = true;
                     
                     // Check if king is on a corner
@@ -617,7 +645,7 @@ class MCTS {
                         // Defenders win
                         return { isOver: true, winner: 'defender', value: 1.0 };
                     }
-                } else if (cell.textContent === '⚫') {
+                } else if (piece === '⚫') {
                     attackerCount++;
                 }
             }

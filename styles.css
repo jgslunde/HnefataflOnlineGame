@@ -77,6 +77,24 @@ td {
     font-size: 5vh;
     border: none;
     transition: background-color 0.3s;  /* Smooth transition for highlighting */
+    position: relative;  /* For positioning policy overlay */
+}
+
+/* Policy overlay for visualization */
+.policy-overlay {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    background-color: rgba(0, 0, 0, 0.75);
+    color: white;
+    font-size: 1.5vh;
+    padding: 2px 4px;
+    border-radius: 3px;
+    pointer-events: none !important;  /* Don't interfere with clicks */
+    font-family: monospace;
+    font-weight: bold;
+    z-index: 10;
+    user-select: none;  /* Prevent text selection */
 }
 
 /* For the attacker */
