@@ -1,0 +1,643 @@
+/**
+ * Monte Carlo Tree Search for Brandubh with Neural Network evaluation
+ * Based on AlphaZero MCTS algorithm
+ * 
+ * The MCTS maintains a search tree where each node represents a game state.
+ * Each node stores statistics:
+ * - N(s,a): visit count
+ * - W(s,a): total action value
+ * - Q(s,a): mean action value
+ * - P(s,a): prior probability from neural network
+ */
+
+class MCTSNode {
+    /**
+     * Node in the MCTS tree
+     * @param {Object} gameState - snapshot of the game board
+     * @param {string} player - 'attacker' or 'defender'
+     * @param {MCTSNode} parent - parent node
+     * @param {Object} parentAction - the move that led to this node
+     * @param {number} prior - prior probability from neural network
+     */
+    constructor(gameState, player, parent = null, parentAction = null, prior = 0.0) {
+        this.gameState = gameState;  // {board: [...], player: '...'}
+        this.player = player;
+        this.parent = parent;
+        this.parentAction = parentAction;
+        this.prior = prior;
+        
+        // Children: Map from move key to MCTSNode
+        this.children = new Map();
+        
+        // Statistics
+        this.visitCount = 0;
+        this.totalValue = 0.0;
+        this.meanValue = 0.0;
+        
+        // Flags
+        this.isExpanded = false;
+        this.isTerminal = false;
+        this.terminalValue = null;
+    }
+    
+    /**
+     * Check if this is a leaf node (not expanded)
+     */
+    isLeaf() {
+        return !this.isExpanded;
+    }
+    
+    /**
+     * Expand this node by creating children for all legal moves
+     * @param {Array} legalMoves - array of {fromRow, fromCol, toRow, toCol, policyIndex}
+     * @param {Float32Array} policyProbs - probability distribution from neural network
+     */
+    expand(legalMoves, policyProbs) {
+        if (this.isExpanded) {
+            console.warn("[MCTSNode] Attempted to expand already expanded node");
+            return;
+        }
+        
+        console.log(`[MCTSNode] Expanding node with ${legalMoves.length} legal moves`);
+        
+        // Extract probabilities for legal moves and normalize
+        const probs = new Float32Array(legalMoves.length);
+        let probSum = 0;
+        
+        for (let i = 0; i < legalMoves.length; i++) {
+            probs[i] = policyProbs[legalMoves[i].policyIndex];
+            probSum += probs[i];
+        }
+        
+        // Normalize (if sum is 0, use uniform distribution)
+        if (probSum > 0) {
+            for (let i = 0; i < probs.length; i++) {
+                probs[i] /= probSum;
+            }
+        } else {
+            console.warn("[MCTSNode] Policy sum is 0, using uniform distribution");
+            const uniform = 1.0 / legalMoves.length;
+            probs.fill(uniform);
+        }
+        
+        // Create child nodes (lazy - don't compute game states yet)
+        for (let i = 0; i < legalMoves.length; i++) {
+            const move = legalMoves[i];
+            const moveKey = `${move.fromRow},${move.fromCol},${move.toRow},${move.toCol}`;
+            const nextPlayer = this.player === 'attacker' ? 'defender' : 'attacker';
+            
+            this.children.set(moveKey, new MCTSNode(
+                null,  // Lazy initialization
+                nextPlayer,
+                this,
+                move,
+                probs[i]
+            ));
+        }
+        
+        this.isExpanded = true;
+        console.log(`[MCTSNode] Expanded node, created ${this.children.size} children`);
+    }
+    
+    /**
+     * Select best child using PUCT algorithm
+     * PUCT = Q(s,a) + c_puct * P(s,a) * sqrt(N(s)) / (1 + N(s,a))
+     * @param {number} cPuct - exploration constant
+     * @returns {Object} {moveKey, child}
+     */
+    selectChild(cPuct = 1.4) {
+        let bestScore = -Infinity;
+        let bestMoveKey = null;
+        let bestChild = null;
+        
+        const sqrtParentVisits = Math.sqrt(this.visitCount);
+        
+        for (let [moveKey, child] of this.children) {
+            // Q value (from child's perspective, so negate for parent)
+            const qValue = child.visitCount > 0 ? -child.meanValue : 0;
+            
+            // U value (exploration bonus)
+            const uValue = cPuct * child.prior * sqrtParentVisits / (1 + child.visitCount);
+            
+            const score = qValue + uValue;
+            
+            if (score > bestScore) {
+                bestScore = score;
+                bestMoveKey = moveKey;
+                bestChild = child;
+            }
+        }
+        
+        return { moveKey: bestMoveKey, child: bestChild };
+    }
+    
+    /**
+     * Update node statistics after a simulation
+     * @param {number} value - value from the perspective of the player at this node
+     */
+    update(value) {
+        this.visitCount++;
+        this.totalValue += value;
+        this.meanValue = this.totalValue / this.visitCount;
+    }
+    
+    /**
+     * Get probability distribution over actions based on visit counts
+     * @param {number} temperature - sampling temperature
+     * @returns {Map} map from moveKey to probability
+     */
+    getVisitDistribution(temperature = 1.0) {
+        if (this.children.size === 0) {
+            return new Map();
+        }
+        
+        const moves = Array.from(this.children.keys());
+        const visits = moves.map(key => this.children.get(key).visitCount);
+        
+        let probs;
+        if (temperature === 0) {
+            // Deterministic: choose most visited
+            probs = new Float32Array(visits.length);
+            const maxVisits = Math.max(...visits);
+            const maxIndex = visits.indexOf(maxVisits);
+            probs[maxIndex] = 1.0;
+        } else {
+            // Apply temperature
+            probs = new Float32Array(visits.length);
+            for (let i = 0; i < visits.length; i++) {
+                probs[i] = Math.pow(visits[i], 1.0 / temperature);
+            }
+            const sum = probs.reduce((a, b) => a + b, 0);
+            for (let i = 0; i < probs.length; i++) {
+                probs[i] /= sum;
+            }
+        }
+        
+        const distribution = new Map();
+        for (let i = 0; i < moves.length; i++) {
+            distribution.set(moves[i], probs[i]);
+        }
+        
+        return distribution;
+    }
+}
+
+
+class MCTS {
+    /**
+     * Monte Carlo Tree Search with neural network evaluation
+     * @param {Object} network - ONNX neural network session
+     * @param {MoveEncoder} moveEncoder - move encoder instance
+     * @param {number} numSimulations - number of simulations per search
+     * @param {number} cPuct - exploration constant
+     */
+    constructor(network, moveEncoder, numSimulations = 100, cPuct = 1.4) {
+        this.network = network;
+        this.moveEncoder = moveEncoder;
+        this.numSimulations = numSimulations;
+        this.cPuct = cPuct;
+        this.root = null;
+        
+        console.log(`[MCTS] Initialized with ${numSimulations} simulations, c_puct=${cPuct}`);
+    }
+    
+    /**
+     * Run MCTS search from the given game state
+     * @param {HTMLTableElement} boardElement - current game board
+     * @param {string} player - 'attacker' or 'defender'
+     * @returns {Map} map from moveKey to visit probability
+     */
+    async search(boardElement, player) {
+        console.log(`[MCTS] Starting search for ${player} with ${this.numSimulations} simulations`);
+        
+        const startTime = performance.now();
+        
+        // Create root node with current game state
+        const rootState = this.captureGameState(boardElement, player);
+        this.root = new MCTSNode(rootState, player);
+        
+        // Check if game is already over
+        const gameOver = this.checkGameOver(boardElement);
+        if (gameOver.isOver) {
+            console.log(`[MCTS] Game is already over, winner: ${gameOver.winner}`);
+            this.root.isTerminal = true;
+            this.root.terminalValue = gameOver.value;
+            return new Map();
+        }
+        
+        // Run simulations
+        for (let sim = 0; sim < this.numSimulations; sim++) {
+            if (sim % 20 === 0) {
+                console.log(`[MCTS] Simulation ${sim + 1}/${this.numSimulations}`);
+            }
+            
+            await this.runSimulation(boardElement);
+        }
+        
+        const elapsedTime = ((performance.now() - startTime) / 1000).toFixed(2);
+        console.log(`[MCTS] Search completed in ${elapsedTime}s`);
+        console.log(`[MCTS] Root visits: ${this.root.visitCount}, Mean value: ${this.root.meanValue.toFixed(3)}`);
+        
+        // Get visit distribution
+        const distribution = this.root.getVisitDistribution();
+        
+        // Log top moves
+        const sortedMoves = Array.from(distribution.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5);
+        console.log("[MCTS] Top 5 moves:");
+        for (let [moveKey, prob] of sortedMoves) {
+            const child = this.root.children.get(moveKey);
+            console.log(`  ${moveKey}: visits=${child.visitCount}, prob=${(prob * 100).toFixed(1)}%, Q=${child.meanValue.toFixed(3)}`);
+        }
+        
+        return distribution;
+    }
+    
+    /**
+     * Run a single MCTS simulation
+     * @param {HTMLTableElement} originalBoard - original game board (not modified)
+     */
+    async runSimulation(originalBoard) {
+        let node = this.root;
+        const searchPath = [node];
+        
+        // Create a clone of the board for this simulation
+        let boardClone = this.cloneBoard(originalBoard);
+        
+        // Selection: traverse tree until leaf
+        while (!node.isLeaf() && !node.isTerminal) {
+            const { moveKey, child } = node.selectChild(this.cPuct);
+            
+            // Lazy initialization: apply move to board clone if child state not yet computed
+            if (child.gameState === null) {
+                this.applyMove(boardClone, child.parentAction, node.player);
+                child.gameState = this.captureGameState(boardClone, child.player);
+            } else {
+                // Restore board state from child
+                this.restoreGameState(boardClone, child.gameState);
+            }
+            
+            node = child;
+            searchPath.push(node);
+        }
+        
+        // Evaluate leaf node
+        let value = 0;
+        
+        if (node.isTerminal) {
+            // Terminal node: use game result
+            value = node.terminalValue;
+        } else {
+            // Non-terminal leaf: evaluate with network and expand
+            const gameOver = this.checkGameOver(boardClone);
+            
+            if (gameOver.isOver) {
+                node.isTerminal = true;
+                node.terminalValue = gameOver.value;
+                value = gameOver.value;
+            } else {
+                const { policyProbs, value: networkValue } = await this.evaluate(boardClone, node.player);
+                value = networkValue;
+                
+                // Expand node
+                const legalMoves = this.moveEncoder.getAllLegalMoves(boardClone, node.player);
+                if (legalMoves.length > 0) {
+                    node.expand(legalMoves, policyProbs);
+                } else {
+                    // No legal moves - game over (stalemate)
+                    node.isTerminal = true;
+                    node.terminalValue = -1.0;  // Loss for current player
+                    value = -1.0;
+                }
+            }
+        }
+        
+        // Backup: propagate value up the tree
+        for (let i = searchPath.length - 1; i >= 0; i--) {
+            searchPath[i].update(value);
+            value = -value;  // Flip value for opponent
+        }
+    }
+    
+    /**
+     * Evaluate a game state with the neural network
+     * @param {HTMLTableElement} boardElement 
+     * @param {string} player 
+     * @returns {Object} {policyProbs, value}
+     */
+    async evaluate(boardElement, player) {
+        // Get state representation (4 planes: attackers, defenders, king, current_player)
+        const state = this.getStateRepresentation(boardElement, player);
+        
+        // Run neural network inference
+        const feeds = { input: new ort.Tensor('float32', state, [1, 4, 7, 7]) };
+        const results = await this.network.run(feeds);
+        
+        // Extract policy and value
+        const policyLogits = results.policy.data;  // Shape: (1, 1176)
+        const value = results.value.data[0];  // Shape: (1, 1)
+        
+        // Mask illegal moves
+        const legalMask = this.moveEncoder.getLegalMoveMask(boardElement, player);
+        const maskedLogits = new Float32Array(1176);
+        for (let i = 0; i < 1176; i++) {
+            maskedLogits[i] = legalMask[i] > 0 ? policyLogits[i] : -1e8;
+        }
+        
+        // Convert to probabilities (softmax)
+        const policyProbs = this.softmax(maskedLogits);
+        
+        return { policyProbs, value };
+    }
+    
+    /**
+     * Get state representation for neural network
+     * Returns 4 planes: [attackers, defenders, king, current_player_plane]
+     * @param {HTMLTableElement} boardElement 
+     * @param {string} player 
+     * @returns {Float32Array} array of shape (4, 7, 7) = 196 elements
+     */
+    getStateRepresentation(boardElement, player) {
+        const state = new Float32Array(4 * 7 * 7);
+        
+        const attackersPlane = 0;
+        const defendersPlane = 49;
+        const kingPlane = 98;
+        const playerPlane = 147;
+        
+        const playerValue = player === 'attacker' ? 0.0 : 1.0;
+        
+        for (let r = 0; r < 7; r++) {
+            for (let c = 0; c < 7; c++) {
+                const cell = boardElement.rows[r].cells[c];
+                const idx = r * 7 + c;
+                
+                if (cell.innerText === '⚫') {
+                    state[attackersPlane + idx] = 1.0;
+                } else if (cell.innerText === '⚪') {
+                    state[defendersPlane + idx] = 1.0;
+                } else if (cell.innerText === '⬜') {
+                    state[kingPlane + idx] = 1.0;
+                }
+                
+                state[playerPlane + idx] = playerValue;
+            }
+        }
+        
+        return state;
+    }
+    
+    /**
+     * Softmax function
+     * @param {Float32Array} logits 
+     * @returns {Float32Array} probabilities
+     */
+    softmax(logits) {
+        const maxLogit = Math.max(...logits);
+        const expLogits = new Float32Array(logits.length);
+        let sum = 0;
+        
+        for (let i = 0; i < logits.length; i++) {
+            expLogits[i] = Math.exp(logits[i] - maxLogit);
+            sum += expLogits[i];
+        }
+        
+        const probs = new Float32Array(logits.length);
+        for (let i = 0; i < logits.length; i++) {
+            probs[i] = expLogits[i] / sum;
+        }
+        
+        return probs;
+    }
+    
+    /**
+     * Select a move using MCTS
+     * @param {HTMLTableElement} boardElement 
+     * @param {string} player 
+     * @param {number} temperature 
+     * @returns {Object} {piece, target} - cells to move from/to
+     */
+    async selectMove(boardElement, player, temperature = 0.0) {
+        console.log(`[MCTS] selectMove called for ${player}, temperature=${temperature}`);
+        
+        const visitProbs = await this.search(boardElement, player);
+        
+        if (visitProbs.size === 0) {
+            console.error("[MCTS] No legal moves available!");
+            return null;
+        }
+        
+        // Select move based on visit probabilities
+        let selectedMoveKey;
+        
+        if (temperature === 0) {
+            // Choose most visited move
+            let maxProb = -1;
+            for (let [moveKey, prob] of visitProbs) {
+                if (prob > maxProb) {
+                    maxProb = prob;
+                    selectedMoveKey = moveKey;
+                }
+            }
+        } else {
+            // Sample from distribution
+            const moves = Array.from(visitProbs.keys());
+            const probs = Array.from(visitProbs.values());
+            selectedMoveKey = this.sampleFromDistribution(moves, probs);
+        }
+        
+        console.log(`[MCTS] Selected move: ${selectedMoveKey}`);
+        
+        // Parse move key
+        const [fromRow, fromCol, toRow, toCol] = selectedMoveKey.split(',').map(Number);
+        
+        // Return as piece and target cells
+        return {
+            piece: boardElement.rows[fromRow].cells[fromCol],
+            target: boardElement.rows[toRow].cells[toCol]
+        };
+    }
+    
+    /**
+     * Sample from a probability distribution
+     * @param {Array} items 
+     * @param {Array} probs 
+     * @returns {*} sampled item
+     */
+    sampleFromDistribution(items, probs) {
+        const rand = Math.random();
+        let cumSum = 0;
+        
+        for (let i = 0; i < items.length; i++) {
+            cumSum += probs[i];
+            if (rand < cumSum) {
+                return items[i];
+            }
+        }
+        
+        return items[items.length - 1];
+    }
+    
+    /**
+     * Capture current game state as a snapshot
+     * @param {HTMLTableElement} boardElement 
+     * @param {string} player 
+     * @returns {Object} {board, player}
+     */
+    captureGameState(boardElement, player) {
+        const board = [];
+        for (let r = 0; r < 7; r++) {
+            const row = [];
+            for (let c = 0; c < 7; c++) {
+                row.push(boardElement.rows[r].cells[c].innerText);
+            }
+            board.push(row);
+        }
+        return { board, player };
+    }
+    
+    /**
+     * Restore game state to board
+     * @param {HTMLTableElement} boardElement 
+     * @param {Object} gameState 
+     */
+    restoreGameState(boardElement, gameState) {
+        for (let r = 0; r < 7; r++) {
+            for (let c = 0; c < 7; c++) {
+                boardElement.rows[r].cells[c].innerText = gameState.board[r][c];
+            }
+        }
+    }
+    
+    /**
+     * Clone board element (for simulation)
+     * @param {HTMLTableElement} boardElement 
+     * @returns {HTMLTableElement}
+     */
+    cloneBoard(boardElement) {
+        const clone = document.createElement('table');
+        clone.innerHTML = boardElement.innerHTML;
+        return clone;
+    }
+    
+    /**
+     * Apply a move to the board (modifies board in place)
+     * @param {HTMLTableElement} boardElement 
+     * @param {Object} move - {fromRow, fromCol, toRow, toCol}
+     * @param {string} player 
+     */
+    applyMove(boardElement, move, player) {
+        const { fromRow, fromCol, toRow, toCol } = move;
+        const piece = boardElement.rows[fromRow].cells[fromCol].innerText;
+        
+        boardElement.rows[fromRow].cells[fromCol].innerText = '';
+        boardElement.rows[toRow].cells[toCol].innerText = piece;
+        
+        // Apply captures (simplified - doesn't change game outcome for value estimation)
+        this.applyCaptures(boardElement, toRow, toCol, piece);
+    }
+    
+    /**
+     * Apply captures after a move
+     * @param {HTMLTableElement} boardElement 
+     * @param {number} r 
+     * @param {number} c 
+     * @param {string} piece 
+     */
+    applyCaptures(boardElement, r, c, piece) {
+        // Check all 4 directions for captures
+        const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+        
+        for (let [dr, dc] of directions) {
+            const nr = r + dr;
+            const nc = c + dc;
+            
+            if (nr < 0 || nr >= 7 || nc < 0 || nc >= 7) continue;
+            
+            const enemy = boardElement.rows[nr].cells[nc].innerText;
+            if (enemy === '' || this.isFriendly(piece, enemy)) continue;
+            
+            // Check opposite side
+            const nr2 = nr + dr;
+            const nc2 = nc + dc;
+            
+            if (nr2 < 0 || nr2 >= 7 || nc2 < 0 || nc2 >= 7) continue;
+            
+            const opposite = boardElement.rows[nr2].cells[nc2].innerText;
+            const isHostileSquare = this.isHostileSquare(nr2, nc2);
+            
+            if (this.isFriendly(piece, opposite) || isHostileSquare) {
+                // Capture!
+                boardElement.rows[nr].cells[nc].innerText = '';
+            }
+        }
+    }
+    
+    /**
+     * Check if two pieces are friendly
+     * @param {string} piece1 
+     * @param {string} piece2 
+     * @returns {boolean}
+     */
+    isFriendly(piece1, piece2) {
+        if (piece1 === '' || piece2 === '') return false;
+        if (piece1 === '⚫') return piece2 === '⚫';
+        return (piece1 === '⚪' || piece1 === '⬜') && (piece2 === '⚪' || piece2 === '⬜');
+    }
+    
+    /**
+     * Check if a square is hostile (corner)
+     * @param {number} r 
+     * @param {number} c 
+     * @returns {boolean}
+     */
+    isHostileSquare(r, c) {
+        return (r === 0 || r === 6) && (c === 0 || c === 6);
+    }
+    
+    /**
+     * Check if game is over
+     * @param {HTMLTableElement} boardElement 
+     * @returns {Object} {isOver, winner, value}
+     */
+    checkGameOver(boardElement) {
+        let kingPresent = false;
+        let attackerCount = 0;
+        
+        for (let row of boardElement.rows) {
+            for (let cell of row.cells) {
+                if (cell.textContent === '⬜') {
+                    kingPresent = true;
+                    
+                    // Check if king is on a corner
+                    const r = cell.parentNode.rowIndex;
+                    const c = cell.cellIndex;
+                    if ((r === 0 || r === 6) && (c === 0 || c === 6)) {
+                        // Defenders win
+                        return { isOver: true, winner: 'defender', value: 1.0 };
+                    }
+                } else if (cell.textContent === '⚫') {
+                    attackerCount++;
+                }
+            }
+        }
+        
+        if (!kingPresent) {
+            // Attackers win
+            return { isOver: true, winner: 'attacker', value: -1.0 };
+        }
+        
+        if (attackerCount === 0) {
+            // Defenders win
+            return { isOver: true, winner: 'defender', value: 1.0 };
+        }
+        
+        return { isOver: false, winner: null, value: 0 };
+    }
+}
+
+// Export for use in other modules
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { MCTSNode, MCTS };
+}

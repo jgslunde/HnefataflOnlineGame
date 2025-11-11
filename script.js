@@ -182,6 +182,7 @@ function getRandomLegalMove(boardElement, player) {
 }
 
 const aiDifficultyRadioButtons = document.querySelectorAll('input[name="ai-difficulty"]');
+const aiTypeRadioButtons = document.querySelectorAll('input[name="ai-type"]');
 // const aiShowEvalRadioButtons = document.querySelectorAll('input[name="ai-show-eval"]');
 document.getElementById('AI-eval-toggle-btn').addEventListener('click', function() {
     var aiEval = document.getElementById('AI-eval');
@@ -193,12 +194,22 @@ document.getElementById('AI-eval-toggle-btn').addEventListener('click', function
     }
 });
 
+function getAIType() {
+    for (let radioButton of aiTypeRadioButtons) {
+        if (radioButton.checked) {
+            return radioButton.value;
+        }
+    }
+    return 'tree-search'; // default
+}
+
 function getAIDifficulty() {
     for (let radioButton of aiDifficultyRadioButtons) {
         if (radioButton.checked) {
             return radioButton.value;
         }
     }
+    return 'medium'; // default
 }
 
 function getAIBestMove(boardElement, player_str) {
@@ -259,6 +270,50 @@ function getAIBestMove(boardElement, player_str) {
         piece: boardElement.rows[movefrom_y].cells[movefrom_x],
         target: boardElement.rows[moveto_y].cells[moveto_x]
     };
+}
+
+async function getMCTSBestMove(boardElement, player_str) {
+    console.log(`[Script] getMCTSBestMove called for ${player_str}`);
+    
+    const difficulty = getAIDifficulty();
+    let numSimulations = 100;
+    
+    // Map difficulty to simulation count
+    if (difficulty === "easy")
+        numSimulations = 100;
+    else if (difficulty === "medium")
+        numSimulations = 200;
+    else if (difficulty === "hard")
+        numSimulations = 300;
+    else if (difficulty === "veryhard")
+        numSimulations = 300;  // Same as hard for now
+    
+    console.log(`[Script] MCTS difficulty: ${difficulty}, simulations: ${numSimulations}`);
+    
+    const agent = getMCTSAgent();
+    
+    if (!agent.isReady) {
+        console.error("[Script] MCTS agent not ready!");
+        // Fall back to tree search AI
+        console.log("[Script] Falling back to tree-search AI");
+        return getAIBestMove(boardElement, player_str);
+    }
+    
+    try {
+        const move = await agent.getBestMove(boardElement, player_str, numSimulations);
+        
+        if (move && move.piece && move.target) {
+            console.log("[Script] MCTS returned move:", move);
+            return move;
+        } else {
+            console.error("[Script] MCTS returned invalid move");
+            return getAIBestMove(boardElement, player_str);
+        }
+    } catch (error) {
+        console.error("[Script] Error in getMCTSBestMove:", error);
+        // Fall back to tree search AI
+        return getAIBestMove(boardElement, player_str);
+    }
 }
 
 function highlightLegalMoves(source, boardElement) {
@@ -374,19 +429,38 @@ function makeAIMove() {
     // aiMoveTimeout = setTimeout(() => {  // Add a delay for better user experience
     //     const move = getRandomLegalMove(boardElement, currentPlayer);
     //     if (move) {
-    //         movePiece(move.piece, move.target);
+        //         movePiece(move.piece, move.target);
     //     }
     // }, 500);
 
     clearTimeout(aiMoveTimeout); // Clear any existing scheduled AI move
-    aiMoveTimeout = setTimeout(() => {  // Add a delay for better user experience
-
-        const move = getAIBestMove(boardElement, currentPlayer);
-
-        if (move) {
-            movePiece(move.piece, move.target);
-        }
-    }, 600);
+    
+    const aiType = getAIType();
+    console.log(`[Script] makeAIMove called, AI type: ${aiType}, player: ${currentPlayer}`);
+    
+    if (aiType === 'mcts') {
+        // Use MCTS AI (async)
+        aiMoveTimeout = setTimeout(async () => {
+            console.log("[Script] Making MCTS move...");
+            const move = await getMCTSBestMove(boardElement, currentPlayer);
+            if (move) {
+                console.log("[Script] Executing MCTS move");
+                movePiece(move.piece, move.target);
+            } else {
+                console.error("[Script] No move returned from MCTS");
+            }
+        }, 600);
+    } else {
+        // Use tree-search AI (original)
+        aiMoveTimeout = setTimeout(() => {
+            console.log("[Script] Making tree-search move...");
+            const move = getAIBestMove(boardElement, currentPlayer);
+            if (move) {
+                console.log("[Script] Executing tree-search move");
+                movePiece(move.piece, move.target);
+            }
+        }, 600);
+    }
 }
 
 function togglePlayer() {
@@ -553,6 +627,18 @@ document.getElementById('btn-ai-ai').addEventListener('click', function() {
 });
 
 const boardElement = document.getElementById('board');
+
+// Initialize MCTS agent on page load
+console.log("[Script] Initializing MCTS agent on page load...");
+initializeMCTSAgent().then(success => {
+    if (success) {
+        console.log("[Script] MCTS agent initialized successfully!");
+    } else {
+        console.error("[Script] MCTS agent initialization failed. Tree-search AI will be used as fallback.");
+    }
+}).catch(error => {
+    console.error("[Script] MCTS agent initialization error:", error);
+});
 
 document.addEventListener('DOMContentLoaded', function() {
     const initialSetup = [

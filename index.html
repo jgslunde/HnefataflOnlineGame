@@ -60,6 +60,16 @@
         <button id="btn-ai-human">AI<br>vs<br>Human</button>
         <button id="btn-ai-ai">AI<br>vs<br>AI</button>
         <div id="ai-difficulty-container">
+            <div style="font-size:1.8vh; font-family:monospace;">AI Type</div>
+            <label>
+                <input type="radio" name="ai-type" value="tree-search" checked> Tree Search
+            </label>
+            <br>
+            <label>
+                <input type="radio" name="ai-type" value="mcts"> MCTS (Neural)
+            </label>
+        </div>
+        <div id="ai-difficulty-container">
             <div style="font-size:1.8vh; font-family:monospace;">AI Difficulty</div>
             <label>
                 <input type="radio" name="ai-difficulty" value="easy"> Easy
@@ -86,6 +96,14 @@
         </div>
     </div>
 
+    <!-- ONNX Runtime Web for neural network inference -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+    <!-- MCTS modules -->
+    <script src="moveEncoder.js"></script>
+    <script src="mcts.js"></script>
+    <script src="mctsAgent.js"></script>
+    
+    <!-- Existing AI and game logic -->
     <script src="Cpp_ai.js"></script>
     <script src="script.js"></script>
 </body>
