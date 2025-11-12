@@ -1190,7 +1190,7 @@ async function populateModelSelector() {
         option.textContent = file;
         
         // Select current model
-        if (window.mctsAgent && window.mctsAgent.cur|rentModelPath === fullPath) {
+        if (window.mctsAgent && window.mctsAgent.currentModelPath === fullPath) {
             option.selected = true;
         } else if (fullPath.includes('checkpoint_small_iter_150.onnx')) {
             option.selected = true; // Default selection
