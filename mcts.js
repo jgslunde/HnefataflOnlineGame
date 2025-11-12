@@ -211,6 +211,10 @@ class MCTS {
     async search(boardElement, player) {
         console.log(`[MCTS] Starting search for ${player} with ${this.numSimulations} simulations`);
         
+        // Log board state for debugging
+        const boardState = this.captureGameState(boardElement, player);
+        console.log(`[MCTS] Board state:`, boardState.board.map(row => row.join('')).join(' / '));
+        
         const startTime = performance.now();
         
         // Create root node with current game state
@@ -301,8 +305,11 @@ class MCTS {
             
             if (gameOver.isOver) {
                 node.isTerminal = true;
-                node.terminalValue = gameOver.value;
-                value = gameOver.value;
+                // Convert terminal value from attacker's perspective to current player's perspective
+                const valueFromAttackerPerspective = gameOver.value;
+                const valueFromCurrentPlayerPerspective = node.player === 'attacker' ? valueFromAttackerPerspective : -valueFromAttackerPerspective;
+                node.terminalValue = valueFromCurrentPlayerPerspective;
+                value = valueFromCurrentPlayerPerspective;
             } else {
                 const { policyProbs, value: networkValue } = await this.evaluate(boardClone, node.player);
                 value = networkValue;
@@ -509,7 +516,16 @@ class MCTS {
         for (let r = 0; r < 7; r++) {
             const row = [];
             for (let c = 0; c < 7; c++) {
-                row.push(boardElement.rows[r].cells[c].innerText);
+                // Use helper to get piece text (ignores policy overlay divs)
+                let piece = '';
+                const cell = boardElement.rows[r].cells[c];
+                for (let node of cell.childNodes) {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        piece = node.textContent.trim();
+                        break;
+                    }
+                }
+                row.push(piece);
             }
             board.push(row);
         }
@@ -524,7 +540,24 @@ class MCTS {
     restoreGameState(boardElement, gameState) {
         for (let r = 0; r < 7; r++) {
             for (let c = 0; c < 7; c++) {
-                boardElement.rows[r].cells[c].innerText = gameState.board[r][c];
+                const cell = boardElement.rows[r].cells[c];
+                const piece = gameState.board[r][c];
+                
+                // Find or create text node to set piece (preserves policy overlay divs)
+                let textNode = null;
+                for (let node of cell.childNodes) {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        textNode = node;
+                        break;
+                    }
+                }
+                
+                if (textNode) {
+                    textNode.textContent = piece;
+                } else {
+                    // No text node exists, create one
+                    cell.insertBefore(document.createTextNode(piece), cell.firstChild);
+                }
             }
         }
     }
@@ -536,7 +569,26 @@ class MCTS {
      */
     cloneBoard(boardElement) {
         const clone = document.createElement('table');
-        clone.innerHTML = boardElement.innerHTML;
+        for (let r = 0; r < 7; r++) {
+            const rowClone = document.createElement('tr');
+            for (let c = 0; c < 7; c++) {
+                const cellClone = document.createElement('td');
+                
+                // Only copy the piece text, not policy overlay divs
+                const originalCell = boardElement.rows[r].cells[c];
+                let piece = '';
+                for (let node of originalCell.childNodes) {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        piece = node.textContent.trim();
+                        break;
+                    }
+                }
+                cellClone.textContent = piece;
+                
+                rowClone.appendChild(cellClone);
+            }
+            clone.appendChild(rowClone);
+        }
         return clone;
     }
     
@@ -642,8 +694,8 @@ class MCTS {
                     const r = cell.parentNode.rowIndex;
                     const c = cell.cellIndex;
                     if ((r === 0 || r === 6) && (c === 0 || c === 6)) {
-                        // Defenders win
-                        return { isOver: true, winner: 'defender', value: 1.0 };
+                        // Defenders win: return value from attacker's perspective
+                        return { isOver: true, winner: 'defender', value: -1.0 };
                     }
                 } else if (piece === '⚫') {
                     attackerCount++;
@@ -652,13 +704,13 @@ class MCTS {
         }
         
         if (!kingPresent) {
-            // Attackers win
-            return { isOver: true, winner: 'attacker', value: -1.0 };
+            // Attackers win: return value from attacker's perspective
+            return { isOver: true, winner: 'attacker', value: 1.0 };
         }
         
         if (attackerCount === 0) {
-            // Defenders win
-            return { isOver: true, winner: 'defender', value: 1.0 };
+            // Defenders win: return value from attacker's perspective
+            return { isOver: true, winner: 'defender', value: -1.0 };
         }
         
         return { isOver: false, winner: null, value: 0 };

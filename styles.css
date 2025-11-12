@@ -39,6 +39,12 @@ body {
     margin-top: 30px;
 }
 
+#help-container {
+    display: flex;
+    flex-direction: row;
+    gap: 1vh;
+}
+
     
 button {
     width: 10.5vh;
@@ -139,7 +145,35 @@ tr:last-child td:last-child {
 
 /* Highlighting for legal squares */
 td.legal-move {
-    background-color: #e3e2b4 !important; /* Highlight color */
+    position: relative;
+}
+
+td.legal-move::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 2vh;
+    height: 2vh;
+    border-radius: 50%;
+    background-color: var(--move-indicator-color, rgba(255, 255, 255, 0.6));
+    pointer-events: none;
+}
+
+/* Darken legal move squares on hover */
+td.legal-move:hover {
+    filter: brightness(0.7);
+}
+
+/* Black pieces get black indicators */
+.attacker td.legal-move::after {
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+/* White pieces get white indicators */
+.defender td.legal-move::after {
+    background-color: rgba(255, 255, 255, 0.6);
 }
 
 /* The overlay styles */
@@ -213,8 +247,54 @@ input[type="radio"]:focus {
     width: 18vh;
 }
 
+#player-config-container {
+    width: 18vh;
+    margin-right: 2vh;
+}
+
+#player-config-container select {
+    width: 100%;
+    padding: 5px;
+    font-size: 1.6vh;
+    font-family: monospace;
+    background-color: #1a2332;
+    color: white;
+    border: 2px solid #3a4a62;
+    cursor: pointer;
+}
+
+#player-config-container select:hover {
+    background-color: #2a3542;
+    border-color: #4a5a72;
+}
+
+#player-config-container select option {
+    background-color: #1a2332;
+    color: white;
+}
+
 .hidden {
     display: none;
+}
+
+/* Animation keyframes */
+@keyframes flash {
+    0%, 100% { background-color: inherit; }
+    50% { background-color: #ffff99; }
+}
+
+@keyframes fadeOut {
+    from { opacity: 1; transform: scale(1); }
+    to { opacity: 0; transform: scale(0.3); }
+}
+
+/* Animation classes */
+.flash-animation {
+    animation: flash 0.6s ease-in-out;
+}
+
+.fade-out-animation {
+    animation: fadeOut 0.4s ease-in-out forwards;
 }
 
 
