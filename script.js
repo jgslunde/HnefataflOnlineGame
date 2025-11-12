@@ -480,13 +480,9 @@ function getAIBestMove(boardElement, player_str) {
     let moveto_y = new Int32Array(Module.HEAP32.buffer, ptr_moveto_y, 1)[0];
 
     console.log(computer_eval);
-    if(computer_eval > 500){
-        document.getElementById('AI-eval').innerHTML = `AI eval:<br>black<br>winning`;
-    }else if(computer_eval < -500){
-        document.getElementById('AI-eval').innerHTML = `AI eval:<br>white<br>winning`;
-    }else{
-        document.getElementById('AI-eval').innerHTML = `AI eval:<br>${computer_eval.toFixed(2)}`;
-    }
+    
+    // Don't update eval display here - it's handled by updateEvaluation()
+    // The computer_eval variable is used by updateEvaluation when evalMode === 'heuristic'
 
     return {
         piece: boardElement.rows[movefrom_y].cells[movefrom_x],
@@ -1433,8 +1429,12 @@ async function updateEvaluation() {
         if (evalMode === 'heuristic') {
             // Use traditional heuristic evaluation
             await getAIBestMove(boardElement, currentPlayer);
-            // computer_eval is set by getAIBestMove
+            // computer_eval is set by getAIBestMove (from current player's perspective)
             evalValue = computer_eval;
+            // Convert to attacker's perspective if needed
+            if (currentPlayer === 'defender') {
+                evalValue = -evalValue;
+            }
         } else if (evalMode === 'nn') {
             // Use raw NN value
             if (!window.mctsAgent || !window.mctsAgent.isReady) {
@@ -1443,6 +1443,10 @@ async function updateEvaluation() {
             }
             const nnResult = await getNNPolicy();
             evalValue = nnResult.value;
+            // Convert to attacker's perspective if needed
+            if (currentPlayer === 'defender') {
+                evalValue = -evalValue;
+            }
         } else if (evalMode === 'nn-mcts') {
             // Use MCTS value
             if (!window.mctsAgent || !window.mctsAgent.isReady) {
@@ -1453,21 +1457,36 @@ async function updateEvaluation() {
             if (mctsResult && mctsResult.rootValue !== undefined) {
                 // Get value from the cached root value
                 evalValue = mctsResult.rootValue;
-                console.log(`[Eval] MCTS root value: ${evalValue}, visits: ${mctsResult.rootVisits}`);
+                // Convert to attacker's perspective if needed
+                if (currentPlayer === 'defender') {
+                    evalValue = -evalValue;
+                }
+                console.log(`[Eval] MCTS root value (attacker perspective): ${evalValue}, visits: ${mctsResult.rootVisits}`);
             } else {
                 console.error("[Eval] MCTS result invalid or root value not found");
                 return;
             }
         }
         
-        // Display the evaluation
+        // Update the eval value display
+        const evalValueSpan = document.getElementById('eval-value');
+        const evalBar = document.getElementById('eval-bar');
+        
+        // Display the evaluation (always from attacker's perspective)
         if (evalValue > 5) {
-            document.getElementById('AI-eval').innerHTML = `AI eval:<br>black<br>winning`;
+            evalValueSpan.textContent = 'attacker\nwinning';
         } else if (evalValue < -5) {
-            document.getElementById('AI-eval').innerHTML = `AI eval:<br>white<br>winning`;
+            evalValueSpan.textContent = 'defender\nwinning';
         } else {
-            document.getElementById('AI-eval').innerHTML = `AI eval:<br>${evalValue.toFixed(2)}`;
+            evalValueSpan.textContent = evalValue.toFixed(2);
         }
+        
+        // Update the visual bar position
+        // Clamp value between -1 and +1 for the bar
+        const clampedValue = Math.max(-1, Math.min(1, evalValue));
+        // Convert from [-1, 1] to [0%, 100%]
+        const barPosition = ((clampedValue + 1) / 2) * 100;
+        evalBar.style.left = `${barPosition}%`;
     } catch (error) {
         console.error("[Eval] Error:", error);
     }
