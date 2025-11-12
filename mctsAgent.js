@@ -142,13 +142,13 @@ class MCTSAgent {
      * @param {number} numSimulations - number of MCTS simulations (optional, uses current setting if not provided)
      * @returns {Object} {piece, target, policyData} - cells to move from/to and policy information
      */
-    async getBestMove(boardElement, player, numSimulations = null) {
+    async getBestMove(boardElement, player, numSimulations = null, temperature = 0.0) {
         if (!this.isReady) {
             console.error("[MCTSAgent] Agent not ready. Call initialize() first.");
             return null;
         }
         
-        console.log(`[MCTSAgent] getBestMove called for ${player}`);
+        console.log(`[MCTSAgent] getBestMove called for ${player}, temperature=${temperature}`);
         
         // Update simulation count if provided
         if (numSimulations !== null && numSimulations !== this.mcts.numSimulations) {
@@ -156,7 +156,7 @@ class MCTSAgent {
         }
         
         try {
-            const move = await this.mcts.selectMove(boardElement, player, 0.0);
+            const move = await this.mcts.selectMove(boardElement, player, temperature);
             
             // Include policy data from the search
             if (move && this.mcts.root) {

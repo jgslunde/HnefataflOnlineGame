@@ -33,7 +33,7 @@ body {
 #buttons-container {
     display: flex;
     flex-direction: row;
-    align-items: center;
+    align-items: flex-start;  /* Align items to top instead of center */
     /* justify-content: center; */
     width: 90vh;
     margin-top: 30px;
@@ -41,31 +41,108 @@ body {
 
 #help-container {
     display: flex;
+    flex-direction: column;  /* Stack buttons vertically */
+    gap: 1vh;
+}
+
+#help-container .button-row {
+    display: flex;
     flex-direction: row;
     gap: 1vh;
 }
 
     
 button {
-    width: 10.5vh;
-    height: 9.5vh;
-    font-size: 1.74vh;
+    width: 9vh;
+    height: 4vh;
+    font-size: 1.5vh;
     font-family: monospace;
-    margin-right: 2vh; /* Spacing between buttons */
     background-color: white;
     color: black;
     border: none;
-    padding: 1vh 2vh;
+    padding: 0.5vh 1vh;
     cursor: pointer;
     transition: background-color 0.3s;
 }
 
-button:last-child {
-    margin-right: 0;
+/* Action buttons (Undo, Restart) - more prominent */
+button.action-btn {
+    background-color: #4a5a72;
+    color: white;
+    font-weight: bold;
 }
 
-button:hover {
-    background-color: #f0d9b5;
+button.action-btn:hover {
+    background-color: #5a6a82;
+}
+
+/* Info buttons (Help, Settings) - darker than action buttons */
+button.info-btn {
+    background-color: #2d3540;
+    color: white;
+    font-weight: normal;
+}
+
+button.info-btn:hover {
+    background-color: #3d4550;
+}
+
+/* Tooltip icon styling */
+.tooltip-icon {
+    display: inline-block;
+    width: 1.4vh;
+    height: 1.4vh;
+    line-height: 1.4vh;
+    text-align: center;
+    border-radius: 50%;
+    background-color: #666;
+    color: white;
+    font-size: 1.2vh;
+    font-weight: bold;
+    margin-left: 0.3vh;
+    cursor: help;
+    position: relative;
+}
+
+.tooltip-icon:hover {
+    background-color: #888;
+}
+
+.tooltip-text {
+    visibility: hidden;
+    width: 25vh;
+    background-color: rgba(0, 0, 0, 0.9);
+    color: white;
+    text-align: left;
+    border-radius: 0.5vh;
+    padding: 1vh;
+    position: absolute;
+    z-index: 100;
+    bottom: 125%;
+    left: 50%;
+    margin-left: -12.5vh;
+    opacity: 0;
+    transition: opacity 0.3s;
+    font-size: 1.4vh;
+    font-weight: normal;
+    line-height: 1.4;
+    pointer-events: none;
+}
+
+.tooltip-text::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    margin-left: -0.5vh;
+    border-width: 0.5vh;
+    border-style: solid;
+    border-color: rgba(0, 0, 0, 0.9) transparent transparent transparent;
+}
+
+.tooltip-icon:hover .tooltip-text {
+    visibility: visible;
+    opacity: 1;
 }
 
 
@@ -197,7 +274,8 @@ td.legal-move:hover {
 #overlay.hidden {
     display: none;
 }
-#helpText {
+#helpText,
+#settingsText {
     position: absolute;
     top: 0;
     left: 0;
@@ -206,15 +284,40 @@ td.legal-move:hover {
     display: flex;
     justify-content: center;
     align-items: center;
-    background-color: rgba(0, 0, 0, 0.9); /* Semi-transparent black background */
+    background-color: rgba(0, 0, 0, 0.9);
     font-size: 50px;
     font-family: monospace;
     color: white;
-    z-index: 20; /* Make sure it's on top of other elements */
+    z-index: 20;
+}
+
+.panel-content {
+    position: relative;
+}
+
+.close-btn {
+    position: absolute;
+    top: -3vh;
+    right: -3vh;
+    background: none;
+    border: none;
+    color: white;
+    font-size: 4vh;
+    cursor: pointer;
+    width: auto;
+    height: auto;
+    padding: 0;
+    font-weight: normal;
+    transition: color 0.2s;
+}
+
+.close-btn:hover {
+    color: #ff6666;
 }
 
 /* The class that hides elements */
-#helpText.hidden {
+#helpText.hidden,
+#settingsText.hidden {
     display: none;
 }
 
@@ -250,6 +353,16 @@ input[type="radio"]:focus {
 #player-config-container {
     width: 18vh;
     margin-right: 2vh;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;  /* Ensure children stretch to full width */
+}
+
+#player-config-container > div:first-child {
+    /* Label div - fixed height to prevent layout shift */
+    height: 3.6vh;  /* Accommodate two lines of text */
+    line-height: 1.8vh;
+    margin-bottom: 5px;
 }
 
 #player-config-container select {
@@ -308,62 +421,120 @@ input[type="radio"]:focus {
 }
 
 
+
 /* Responsive layout for screens smaller than 768 pixels */
 @media only screen and (max-width: 768px) {
+    body {
+        height: auto;
+        min-height: 100vh;
+        padding: 10px 0;
+    }
+
     td {
-        cursor: default; /* normal arrow cursor for all cells */
-        width: 50px;  /* Increase from previous value */
-        height: 50px;  /* Increase from previous value */
+        cursor: default;
+        width: 50px;
+        height: 50px;
         text-align: center;
         vertical-align: middle;
-        font-size: 32px;  /* Adjust font size to match larger cell size */
-        border: none;  /* Remove cell borders */
-        transition: background-color 0.3s;  /* Smooth transition for highlighting */
+        font-size: 32px;
+        border: none;
+        transition: background-color 0.3s;
     }
 
     #board-and-players {
         flex-direction: column;
         align-items: center;
         width: 98%;
-        height: 60vh;
+        height: auto;
+        margin-bottom: 15px;
     }
     
     #player-names {
-        font-size: 24px;
+        font-size: 16px;  /* Much smaller text for mobile */
         flex-direction: row;
-        /* justify-content: space-between; */
         width: 100%;
-        margin-bottom: 20px; /* Spacing between the labels and the board */
-        height:10vh;
+        margin-bottom: 15px;
+        height: auto;
+        padding: 5px 0;
     }
     
     #attacker-label, #defender-label {
         flex: 1;
-        text-align: center; /* Center the labels */
+        text-align: center;
+        line-height: 1.3;
     }
+
     #buttons-container {
-        display: flex;
-        flex-wrap: wrap;
-        /* flex-direction: column; */
-        align-items: center;
-        /* justify-content: center; */
-        width: 80%;
-        height: 20vh;
+        display: grid;
+        grid-template-columns: 1fr 1fr;  /* 2 columns */
+        gap: 10px;
+        width: 95%;
+        max-width: 400px;
         margin-top: 10px;
     }
 
+    #player-config-container {
+        width: 100%;
+        margin-right: 0;
+    }
+
+    #player-config-container > div:first-child {
+        font-size: 12px;  /* Much smaller label text */
+        height: auto;
+        line-height: 1.2;
+        margin-bottom: 3px;
+        min-height: 30px;  /* Ensure space for two lines */
+    }
+
+    #player-config-container select {
+        font-size: 14px;
+        padding: 8px 4px;
+        width: 100%;
+    }
+
+    .tooltip-icon {
+        width: 14px;
+        height: 14px;
+        line-height: 14px;
+        font-size: 10px;
+        margin-left: 3px;
+    }
+
+    .tooltip-text {
+        width: 200px;
+        font-size: 11px;
+        padding: 8px;
+        margin-left: -100px;
+    }
+
+    #help-container {
+        grid-column: 1 / -1;  /* Span both columns */
+        width: 100%;
+    }
+
+    #help-container .button-row {
+        width: 100%;
+        justify-content: space-between;
+    }
+
     button {
-        width: 80px;
-        height: 80px;
-        font-size: 16px;
+        width: 100%;
+        min-width: 70px;
+        height: 45px;
+        font-size: 14px;
         font-family: monospace;
-        margin-top: 20px; /* Spacing between buttons */
-        margin-bottom: 10px; /* Spacing between buttons */
-        background-color: white;
-        color: black;
-        border: none;
-        padding: 10px 20px;
+        margin: 0;
+        padding: 8px 12px;
         cursor: pointer;
-        transition: background-color 0.3s;
+    }
+
+    button.action-btn,
+    button.info-btn {
+        font-size: 14px;
+    }
+
+    #eval-bar {
+        width: 50px;
+        font-size: 14px;
     }
 }

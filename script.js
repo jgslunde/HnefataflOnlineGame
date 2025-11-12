@@ -500,9 +500,9 @@ async function getMCTSBestMove(boardElement, player_str) {
     const difficulty = getAIDifficulty();
     
     // Map difficulty to simulation count
-    const simCount = { easy: 50, medium: 100, hard: 150, veryhard: 200 }[difficulty] || 100;
+    const simCount = { easy: 50, medium: 100, hard: 200, veryhard: 400 }[difficulty] || 100;
     
-    console.log(`[Script] MCTS difficulty: ${difficulty}, simulations: ${simCount}`);
+    console.log(`[Script] MCTS difficulty: ${difficulty}, simulations: ${simCount}, temperature: ${mctsTemperature}`);
     
     const agent = getMCTSAgent();
     
@@ -516,7 +516,7 @@ async function getMCTSBestMove(boardElement, player_str) {
     try {
         // Always do a fresh search for AI moves (don't use cache)
         console.log("[Script] Running fresh MCTS search for AI move");
-        const move = await agent.getBestMove(boardElement, player_str, simCount);
+        const move = await agent.getBestMove(boardElement, player_str, simCount, mctsTemperature);
         
         if (move && move.piece && move.target) {
             console.log("[Script] MCTS returned move:", move);
@@ -1024,11 +1024,53 @@ function resetGame() {
 
 document.getElementById('help-btn').addEventListener('click', function() {
     var helpText = document.getElementById('helpText');
+    var settingsText = document.getElementById('settingsText');
+    
+    // Close settings if open
+    if (!settingsText.classList.contains('hidden')) {
+        settingsText.classList.add('hidden');
+    }
+    
+    // Toggle help
     if (helpText.classList.contains('hidden')) {
         helpText.classList.remove('hidden');
     } else {
         helpText.classList.add('hidden');
     }
+});
+
+// Settings button
+document.getElementById('settings-btn').addEventListener('click', function() {
+    var helpText = document.getElementById('helpText');
+    var settingsText = document.getElementById('settingsText');
+    
+    // Close help if open
+    if (!helpText.classList.contains('hidden')) {
+        helpText.classList.add('hidden');
+    }
+    
+    // Toggle settings
+    if (settingsText.classList.contains('hidden')) {
+        settingsText.classList.remove('hidden');
+    } else {
+        settingsText.classList.add('hidden');
+    }
+});
+
+// Temperature slider
+document.getElementById('temperature-slider').addEventListener('input', function() {
+    mctsTemperature = parseFloat(this.value);
+    document.getElementById('temperature-value').textContent = mctsTemperature.toFixed(1);
+    console.log(`[Settings] Temperature set to ${mctsTemperature}`);
+});
+
+// MCTS simulations slider
+document.getElementById('mcts-simulations-slider').addEventListener('input', function() {
+    mctsSimulationCount = parseInt(this.value);
+    document.getElementById('mcts-simulations-value').textContent = mctsSimulationCount;
+    console.log(`[Settings] MCTS simulation count set to ${mctsSimulationCount}`);
+    // Clear cache when simulation count changes
+    clearMCTSCache();
 });
 
 // Undo button
@@ -1087,8 +1129,10 @@ function getBoardState(boardElement) {
 const boardElement = document.getElementById('board');
 
 // AI Evaluation and Policy visualization state
-let evalMode = 'off'; // 'off', 'heuristic', 'nn', 'nn-mcts'
+let evalMode = 'nn-mcts'; // 'off', 'heuristic', 'nn', 'nn-mcts'
 let policyMode = 'off'; // 'off', 'heuristic', 'nn', 'nn-mcts'
+let mctsTemperature = 0.4; // Temperature for MCTS move selection
+let mctsSimulationCount = 200; // Simulation count for eval bar and move suggestions
 
 // MCTS cache - stores results per position to avoid re-computation
 let mctsCache = {
@@ -1124,6 +1168,11 @@ console.log("[Script] Initializing MCTS agent on page load...");
 initializeMCTSAgent().then(success => {
     if (success) {
         console.log("[Script] MCTS agent initialized successfully!");
+        // Trigger initial evaluation if evalMode is set
+        if (evalMode !== 'off') {
+            console.log("[Script] Triggering initial evaluation...");
+            updateEvaluation();
+        }
     } else {
         console.error("[Script] MCTS agent initialization failed. Tree-search AI will be used as fallback.");
     }
@@ -1215,8 +1264,8 @@ async function getMCTSResult() {
         return mctsCache.mctsResult;
     }
     
-    // Compute new MCTS result with fixed simulation count for move suggestions
-    const simCount = 200;  // Fixed depth for move suggestions
+    // Compute new MCTS result with configurable simulation count for move suggestions
+    const simCount = mctsSimulationCount;  // Use global setting
     
     console.log("[MCTS Cache] Computing new MCTS result with", simCount, "simulations");
     const result = await window.mctsAgent.getBestMove(boardElement, currentPlayer, simCount);
@@ -1317,15 +1366,27 @@ async function updatePolicyVisualization() {
             policyData = {
                 policy: policyProbs,
                 visitCounts: null,
+                value: nnResult.value,
+                moveValues: null,
                 source: 'nn'
             };
         } else if (policyMode === 'nn-mcts') {
             // Use MCTS visit counts
             const mctsResult = await getMCTSResult();
             if (mctsResult && mctsResult.policyData) {
+                // Extract move values from MCTS children
+                const moveValues = new Map();
+                if (window.mctsAgent && window.mctsAgent.mcts && window.mctsAgent.mcts.root) {
+                    for (const [moveKey, child] of window.mctsAgent.mcts.root.children.entries()) {
+                        moveValues.set(moveKey, child.meanValue);
+                    }
+                }
+                
                 policyData = {
                     policy: mctsResult.policyData.policy,
                     visitCounts: mctsResult.policyData.visitCounts,
+                    value: mctsResult.rootValue || 0,
+                    moveValues: moveValues,
                     source: 'mcts'
                 };
             } else {
@@ -1336,6 +1397,8 @@ async function updatePolicyVisualization() {
                 policyData = {
                     policy: policyProbs,
                     visitCounts: null,
+                    value: nnResult.value,
+                    moveValues: null,
                     source: 'nn'
                 };
             }
@@ -1343,9 +1406,9 @@ async function updatePolicyVisualization() {
         
         // Visualize based on selected piece
         if (selectedPiece) {
-            visualizePolicyForPiece(selectedPiece, policyData);
+            await visualizePolicyForPiece(selectedPiece, policyData);
         } else {
-            visualizePolicyForAllPieces(policyData);
+            await visualizePolicyForAllPieces(policyData);
         }
     } catch (error) {
         console.error("[Policy Viz] Error:", error);
@@ -1413,7 +1476,7 @@ async function updateEvaluation() {
 /**
  * Visualize policy probabilities for selecting each piece
  */
-function visualizePolicyForAllPieces(policyData) {
+async function visualizePolicyForAllPieces(policyData) {
     if (!policyData) return;
     
     clearPolicyVisualization();
@@ -1425,21 +1488,36 @@ function visualizePolicyForAllPieces(policyData) {
     
     // Group moves by source piece
     const pieceProbs = new Map(); // Map from "row,col" to probability/count
+    const pieceValues = new Map(); // Map from "row,col" to best value for moves from that piece
     
     for (const move of legalMoves) {
         const moveIdx = encoder.encodeMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+        const moveKey = `${move.fromRow},${move.fromCol},${move.toRow},${move.toCol}`;
         let prob;
+        let value = 0;
         
         if (policyData.source === 'mcts' && policyData.visitCounts) {
             // Use MCTS visit counts (raw counts, not normalized yet)
             prob = policyData.visitCounts.get(moveIdx) || 0;
+            // Get value from MCTS child node
+            if (policyData.moveValues && policyData.moveValues.has(moveKey)) {
+                value = -policyData.moveValues.get(moveKey); // Negate because it's opponent's perspective
+            }
         } else {
             // Use NN policy (already converted to probabilities via softmax)
             prob = policyData.policy[moveIdx] || 0;
+            // For NN, we'll use the base position value (approximation)
+            value = policyData.value || 0;
         }
         
         const key = `${move.fromRow},${move.fromCol}`;
         pieceProbs.set(key, (pieceProbs.get(key) || 0) + prob);
+        
+        // Track the best (maximum) value for moves from this piece
+        const currentBestValue = pieceValues.get(key);
+        if (currentBestValue === undefined || value > currentBestValue) {
+            pieceValues.set(key, value);
+        }
     }
     
     console.log(`[Policy Viz] Piece probabilities/counts:`, Array.from(pieceProbs.entries()).slice(0, 5));
@@ -1449,12 +1527,13 @@ function visualizePolicyForAllPieces(policyData) {
     console.log(`[Policy Viz] Total: ${total}, Source: ${policyData.source}`);
     
     if (total > 0) {
-        for (const [key, value] of pieceProbs.entries()) {
-            const percentage = ((value / total) * 100).toFixed(1);
+        for (const [key, probValue] of pieceProbs.entries()) {
+            const percentage = (probValue / total) * 100;
+            const value = pieceValues.get(key) || 0;
             const [row, col] = key.split(',').map(Number);
             const cell = boardElement.rows[row].cells[col];
-            console.log(`[Policy Viz] Piece at (${row},${col}): value=${value}, percentage=${percentage}%`);
-            showPolicyOnCell(cell, percentage);
+            console.log(`[Policy Viz] Piece at (${row},${col}): prob=${probValue}, percentage=${percentage}%, value=${value}`);
+            showPolicyOnCell(cell, percentage, value);
         }
     }
 }
@@ -1462,7 +1541,7 @@ function visualizePolicyForAllPieces(policyData) {
 /**
  * Visualize policy probabilities for moves from a selected piece
  */
-function visualizePolicyForPiece(pieceCell, policyData) {
+async function visualizePolicyForPiece(pieceCell, policyData) {
     if (!policyData) return;
     
     clearPolicyVisualization();
@@ -1474,38 +1553,50 @@ function visualizePolicyForPiece(pieceCell, policyData) {
     const legalMoves = encoder.getAllLegalMoves(boardElement, currentPlayer)
         .filter(m => m.fromRow === fromRow && m.fromCol === fromCol);
     
-    // Get probabilities for each move
+    // Get probabilities and values for each move
     const moveProbs = new Map();
+    const moveValues = new Map();
     
     for (const move of legalMoves) {
         const moveIdx = encoder.encodeMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
+        const moveKey = `${move.fromRow},${move.fromCol},${move.toRow},${move.toCol}`;
         let prob;
+        let value = 0;
         
         if (policyData.source === 'mcts' && policyData.visitCounts) {
             prob = policyData.visitCounts.get(moveIdx) || 0;
+            // Get value from MCTS child node
+            if (policyData.moveValues && policyData.moveValues.has(moveKey)) {
+                value = -policyData.moveValues.get(moveKey); // Negate because it's opponent's perspective
+            }
         } else {
             prob = policyData.policy[moveIdx] || 0;
+            // For NN, use base position value (approximation)
+            value = policyData.value || 0;
         }
         
-        moveProbs.set(`${move.toRow},${move.toCol}`, prob);
+        const key = `${move.toRow},${move.toCol}`;
+        moveProbs.set(key, prob);
+        moveValues.set(key, value);
     }
     
     // Normalize to get percentages
     const total = Array.from(moveProbs.values()).reduce((a, b) => a + b, 0);
     if (total > 0) {
-        for (const [key, value] of moveProbs.entries()) {
-            const percentage = ((value / total) * 100).toFixed(1);
+        for (const [key, probValue] of moveProbs.entries()) {
+            const percentage = (probValue / total) * 100;
+            const value = moveValues.get(key) || 0;
             const [row, col] = key.split(',').map(Number);
             const cell = boardElement.rows[row].cells[col];
-            showPolicyOnCell(cell, percentage);
+            showPolicyOnCell(cell, percentage, value);
         }
     }
 }
 
 /**
- * Display policy percentage on a cell
+ * Display policy percentage and value on a cell
  */
-function showPolicyOnCell(cell, percentage) {
+function showPolicyOnCell(cell, percentage, value) {
     // Create or update overlay div
     let overlay = cell.querySelector('.policy-overlay');
     if (!overlay) {
@@ -1514,7 +1605,11 @@ function showPolicyOnCell(cell, percentage) {
         overlay.style.pointerEvents = 'none';  // Ensure clicks pass through
         cell.appendChild(overlay);
     }
-    overlay.textContent = `${percentage}%`;
+    
+    // Format: "+0.4 (31%)" or "-0.2 (15%)"
+    const sign = value >= 0 ? '+' : '';
+    const percentageInt = Math.round(percentage);
+    overlay.textContent = `${sign}${value.toFixed(1)} (${percentageInt}%)`;
 }
 
 /**

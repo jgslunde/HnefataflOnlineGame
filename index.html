@@ -24,29 +24,54 @@
         </div>
 
         <div id="helpText" class="hidden">
-            <!-- <span id="helpText"> -->
-                <div style=" padding-right:20px;">
-                    Rules:
-                    <br>
-                    <br>
-                    <br>
-                    <br>
-                    <br>
-                    Misc:
+            <div class="panel-content">
+                <button class="close-btn" onclick="document.getElementById('helpText').classList.add('hidden')">✕</button>
+                <div style="font-size:2vh; max-width: 70vh;">
+                    <div style="margin-bottom: 2vh;">
+                        <div style="font-weight: bold; margin-bottom: 0.5vh;">Rules:</div>
+                        - All pieces (king included) move like rooks in chess, horizontally or vertically as far as they want.<br>
+                        - The attackers (black) win by capturing the white king (the center piece).<br>
+                        - The defenders (white) win by escaping with the king to one of the four corners.<br>
+                        - Both sides (king included) captures enemy pieces by, through a move, squizing them in between two of your pieces (horizontally or vertically).<br>
+                        - The four corners can only be occupied by the king, and can also be used as an allied piece in a capture.<br>
+                        - Three-fold repetition does not result in a draw, and is instead an illegal move.<br>
+                    </div>
+                    <div>
+                        <div style="font-weight: bold; margin-bottom: 0.5vh;">AIs:</div>
+                        - The "NN + MCTS" AI is inspired by AlphaZero, and is trained with reinforcement learning, and contains a neural network (NN) which predicts good moves and the game evaluation. It provides the most natural and human-like play. It performs a monte carlo tree search (MCTS), guided by its NN, to look for good moves. The difficult setting decides the number of simulations: Easy (50), Medium (100), Hard (200), Very Hard (400).<br>
+                        - The "Minimax" AI is inspired by traditional engines like Stockfish, and simulates all possible game states for X moves into the future. It relies of a set of hard-coded rules for good play (called "heuristics"). These are not tuned well, and this AI therefore plays quite strangely until it finds a forced winning move. The difficulty decides what depth into the future it will look: Easy (3), Medium (4), Hard (5), Very hard (6).
+                    </div>
                 </div>
-                <div style="font-size:2vh;">
-                    - All pieces (king included) move like rooks in chess, horizontally or vertically as far as they want.<br>
-                    - The attackers (black) win by capturing the white king (the white square).<br>
-                    - The defenders (white) win by escaping with the king to one of the four corners.<br>
-                    - Both sides (king included) captures enemy pieces by, through a move, squizing them in between two of your pieces (horizontally or vertically).<br>
-                    - The four corners can only be occupied by the king, and can also be used as an allied piece in a capture.<br>
-                    <br>
-                    <br>
-                    - There should be a threefold repetition rule, but it's not implemented.<br>
-                    - "AI difficulty" decides how many moves ahead the Hnefatafl AI engine sees. It does the same for the AI evaluation, if "Toggle AI eval" is turned on.<br>
-                    - For "Very Hard", the browser may become unresponsive for a little bit, both for AI play, and AI evaulation.
+            </div>
+        </div>
+
+        <div id="settingsText" class="hidden">
+            <div class="panel-content">
+                <button class="close-btn" onclick="document.getElementById('settingsText').classList.add('hidden')">✕</button>
+                <div style="font-size:2vh; max-width: 70vh;">
+                    <div style="margin-bottom: 2vh;">
+                        <div style="font-weight: bold; margin-bottom: 1vh;">Neural Network Settings</div>
+                        <div style="margin-bottom: 1.5vh;">
+                            <label for="temperature-slider" style="display: block; margin-bottom: 0.5vh;">
+                                Temperature: <span id="temperature-value">0.4</span>
+                            </label>
+                            <input type="range" id="temperature-slider" min="0" max="1" step="0.05" value="0.4" style="width: 100%; cursor: pointer;">
+                            <div style="font-size: 1.6vh; color: #888; margin-top: 0.5vh;">
+                                Randomness in AI move selection. 0 = deterministic (always picks best move). Set to 0.4 - 0.6 for dynamic yet strong play.
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 1.5vh;">
+                            <label for="mcts-simulations-slider" style="display: block; margin-bottom: 0.5vh;">
+                                MCTS Simulations (Eval/Suggestions): <span id="mcts-simulations-value">200</span>
+                            </label>
+                            <input type="range" id="mcts-simulations-slider" min="50" max="1000" step="50" value="200" style="width: 100%; cursor: pointer;">
+                            <div style="font-size: 1.6vh; color: #888; margin-top: 0.5vh;">
+                                Number of simulations for evaluation bar and move suggestions. Higher = more accurate but slower. Does not affect AI player difficulty.
+                            </div>
+                        </div>
+                    </div>
                 </div>
-            <!-- </span> -->
+            </div>
         </div>
 
         <div id="overlay" class="hidden">
@@ -57,11 +82,16 @@
     <div id="buttons-container">
         <!-- Attacker Player Selection -->
         <div id="player-config-container">
-            <div style="font-size:1.8vh; font-family:monospace; margin-bottom: 5px;">Attacker</div>
+            <div style="font-size:1.8vh; font-family:monospace; margin-bottom: 5px;">
+                Attacker
+                <span class="tooltip-icon">?
+                    <span class="tooltip-text">Choose who controls the attacker (black pieces). The AI can use either a minimax search, or a neural network with a monte carlo tree search ("NN + MCTS"). The neural network plays more naturally, and is recommended.</span>
+                </span>
+            </div>
             <select id="attacker-type">
-                <option value="human">Human</option>
-                <option value="tree-search">AI (Traditional)</option>
-                <option value="mcts">AI (Neural Network)</option>
+                <option value="human" selected>Human</option>
+                <option value="mcts">AI: NN + MCTS</option>
+                <option value="tree-search">AI: Minimax</option>
             </select>
             <div id="attacker-difficulty-container" class="hidden" style="margin-top: 5px;">
                 <select id="attacker-difficulty">
@@ -75,11 +105,16 @@
 
         <!-- Defender Player Selection -->
         <div id="player-config-container">
-            <div style="font-size:1.8vh; font-family:monospace; margin-bottom: 5px;">Defender</div>
+            <div style="font-size:1.8vh; font-family:monospace; margin-bottom: 5px;">
+                Defender
+                <span class="tooltip-icon">?
+                    <span class="tooltip-text">Choose who controls the defender (black pieces). The AI can use either a minimax search, or a neural network with a monte carlo tree search ("NN + MCTS"). The neural network plays more naturally, and is recommended.</span>
+                </span>
+            </div>
             <select id="defender-type">
                 <option value="human" selected>Human</option>
-                <option value="tree-search">AI (Traditional)</option>
-                <option value="mcts">AI (Neural Network)</option>
+                <option value="mcts">AI: NN + MCTS</option>
+                <option value="tree-search">AI: Minimax</option>
             </select>
             <div id="defender-difficulty-container" class="hidden" style="margin-top: 5px;">
                 <select id="defender-difficulty">
@@ -93,30 +128,44 @@
 
         <!-- AI Evaluation Options -->
         <div id="player-config-container">
-            <div style="font-size:1.8vh; font-family:monospace; margin-bottom: 5px;">AI eval:</div>
+            <div style="font-size:1.8vh; font-family:monospace; margin-bottom: 5px;">
+                Eval bar:
+                <span class="tooltip-icon">?
+                    <span class="tooltip-text">Toggle position evaluation. "Heuristics" uses hand-crafted rules, "NN (policy)" uses the raw output of a neural network, and "NN (MCTS)" uses Monte Carlo Tree Search simulations with the neural network. "NN (MCTS)" is the most accurate.</span>
+                </span>
+            </div>
             <select id="eval-mode-select">
-                <option value="off" selected>Off</option>
+                <option value="off">Off</option>
                 <option value="heuristic">Heuristics</option>
                 <option value="nn">NN</option>
-                <option value="nn-mcts">NN (MCTS)</option>
+                <option value="nn-mcts" selected>NN + MCTS</option>
             </select>
         </div>
 
         <!-- Move Suggestions Options -->
         <div id="player-config-container">
-            <div style="font-size:1.8vh; font-family:monospace; margin-bottom: 5px;">Move suggestions:</div>
+            <div style="font-size:1.8vh; font-family:monospace; margin-bottom: 5px;">
+                Move sug.:
+                <span class="tooltip-icon">?
+                    <span class="tooltip-text">Toggle suggested moves. "NN (policy)" uses the raw output of a neural network, and "NN (MCTS)" uses Monte Carlo Tree Search simulations with the neural network. "NN (MCTS)" is the most accurate.</span>
+                </span>
+            </div>
             <select id="policy-mode-select">
                 <option value="off" selected>Off</option>
-                <option value="heuristic">Heuristics</option>
-                <option value="nn">NN</option>
-                <option value="nn-mcts">NN (MCTS)</option>
+                <option value="nn">NN (policy)</option>
+                <option value="nn-mcts">NN + MCTS</option>
             </select>
         </div>
 
         <div id="help-container">
-            <button id="undo-btn">Undo</button>
-            <button id="restart-btn">Restart</button>
-            <button id="help-btn">Help</button>
+            <div class="button-row">
+                <button id="undo-btn" class="action-btn">Undo</button>
+                <button id="restart-btn" class="action-btn">Restart</button>
+            </div>
+            <div class="button-row">
+                <button id="help-btn" class="info-btn">Help</button>
+                <button id="settings-btn" class="info-btn">Settings</button>
+            </div>
         </div>
     </div>
 
