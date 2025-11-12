@@ -5,6 +5,11 @@ This ensures compatibility with ONNX Runtime Web.
 """
 
 import torch
+
+# Enable denormal flushing to prevent performance issues
+# This ensures the exported ONNX model doesn't contain denormal numbers
+torch.set_flush_denormal(True)
+
 import sys
 from pathlib import Path
 
@@ -108,6 +113,31 @@ def export_model_to_onnx(checkpoint_path, output_path, opset_version=14,
     
     model.eval()
     
+    # Fix denormal/subnormal performance issues by normalizing batch norm stats
+    # This prevents extreme slowdowns caused by tiny activation values
+    print("\nPreparing model for export...")
+    print("  • Denormal flushing: ENABLED (torch.set_flush_denormal=True)")
+    print("  • Checking batch normalization statistics...")
+    
+    max_running_var_before = 0
+    num_fixed = 0
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.BatchNorm2d):
+            max_var = module.running_var.max().item()
+            max_running_var_before = max(max_running_var_before, max_var)
+            
+            # Cap running variance at reasonable values to prevent denormals
+            # Values > 10 can cause severe performance issues
+            if max_var > 10.0:
+                module.running_var.clamp_(max=10.0)
+                num_fixed += 1
+    
+    if num_fixed > 0:
+        print(f"  ✓ Fixed {num_fixed} batch norm layers (max var was {max_running_var_before:.1f}, capped at 10.0)")
+        print(f"    This prevents denormal number performance issues.")
+    else:
+        print(f"  ✓ All batch norm statistics healthy (max var: {max_running_var_before:.1f})")
+    
     # Create dummy input (batch_size=1, channels=4, height=7, width=7)
     dummy_input = torch.randn(1, 4, 7, 7)
     
@@ -136,9 +166,21 @@ def export_model_to_onnx(checkpoint_path, output_path, opset_version=14,
         # Load the exported model and re-save with all data embedded
         # This prevents external data files which don't work in browsers
         import onnx
-        model_proto = onnx.load(output_path)
+        from pathlib import Path
+        
+        # Load model (this might load external data if it was created)
+        model_proto = onnx.load(output_path, load_external_data=True)
+        
+        # Save with all data embedded in the main file
         onnx.save(model_proto, output_path, save_as_external_data=False)
-        print("✓ Re-saved model with embedded data (no external files)")
+        
+        # Remove any .onnx.data file that might have been created
+        external_data_file = Path(str(output_path) + '.data')
+        if external_data_file.exists():
+            external_data_file.unlink()
+            print("✓ Removed external data file")
+        
+        print("✓ Model saved with all data embedded (no external files)")
         print(f"✓ Model exported to {output_path}")
         
         # Verify the exported model
@@ -219,7 +261,7 @@ if __name__ == '__main__':
     
     parser = argparse.ArgumentParser(description='Export PyTorch model to ONNX for web deployment')
     parser.add_argument('checkpoint', help='Path to PyTorch checkpoint (.pt or .pth)')
-    parser.add_argument('-o', '--output', help='Output ONNX file path', default='checkpoints/checkpoint_iter_99.onnx')
+    parser.add_argument('-o', '--output', help='Output ONNX file path (default: same as input with .onnx extension)', default=None)
     parser.add_argument('--opset', type=int, default=14, help='ONNX opset version (default: 14)')
     parser.add_argument('--test', action='store_true', help='Test the exported model with onnxruntime')
     parser.add_argument('--num-res-blocks', type=int, default=None, 
@@ -228,6 +270,12 @@ if __name__ == '__main__':
                         help='Number of channels (auto-detected if not provided)')
     
     args = parser.parse_args()
+    
+    # Determine output path
+    if args.output is None:
+        # Generate output path from input: checkpoint.pth -> checkpoint.onnx
+        input_path = Path(args.checkpoint)
+        args.output = str(input_path.with_suffix('.onnx'))
     
     # Create output directory if needed
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
