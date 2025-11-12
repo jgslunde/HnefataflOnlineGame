@@ -10,20 +10,27 @@ class MCTSAgent {
         this.mcts = null;
         this.isLoading = false;
         this.isReady = false;
+        this.currentModelPath = 'checkpoints/checkpoint_iter_99.onnx'; // Default model
         
         console.log("[MCTSAgent] Created, waiting for initialization");
     }
     
     /**
      * Initialize the agent by loading the neural network
+     * @param {string} modelPath - Optional path to the ONNX model
      */
-    async initialize() {
-        if (this.isLoading || this.isReady) {
-            console.log("[MCTSAgent] Already initialized or loading");
+    async initialize(modelPath = null) {
+        if (modelPath) {
+            this.currentModelPath = modelPath;
+        }
+        
+        if (this.isLoading) {
+            console.log("[MCTSAgent] Already loading, please wait");
             return;
         }
         
         this.isLoading = true;
+        this.isReady = false;
         console.log("[MCTSAgent] Starting initialization...");
         
         try {
@@ -42,11 +49,16 @@ class MCTSAgent {
             console.log("[MCTSAgent] WASM threads:", ort.env.wasm.numThreads);
             
             // Load the ONNX model
-            const modelPath = 'checkpoints/checkpoint_iter_99.onnx';
-            console.log(`[MCTSAgent] Loading model from ${modelPath}...`);
+            console.log(`[MCTSAgent] Loading model from ${this.currentModelPath}...`);
             
             try {
-                this.session = await ort.InferenceSession.create(modelPath, {
+                // Release old session if it exists
+                if (this.session) {
+                    await this.session.handler?.dispose?.();
+                    this.session = null;
+                }
+                
+                this.session = await ort.InferenceSession.create(this.currentModelPath, {
                     executionProviders: ['wasm'],
                     graphOptimizationLevel: 'all'
                 });

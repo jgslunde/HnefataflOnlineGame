@@ -33,7 +33,7 @@ body {
 #eval-bar-container {
     width: 100%;
     height: 1.5vh;
-    background: linear-gradient(to right, #000000 0%, #888888 50%, #ffffff 100%);
+    background: linear-gradient(to right, #ffffff 0%, #888888 50%, #000000 100%);
     border: 1px solid #666;
     margin-top: 0.5vh;
     position: relative;
@@ -201,17 +201,24 @@ td {
     user-select: none;  /* Prevent text selection */
 }
 
-/* For the attacker */
-#board.attacker td.⚫:hover {
+/* For the attacker (only when not AI turn) */
+#board.attacker:not(.ai-turn) td.⚫:hover {
     cursor: pointer;
     background-color: rgba(50, 50, 50, 0.1);
 }
 
-/* For the defender */
-#board.defender td.⚪:hover, 
-#board.defender td.⬜:hover {
+/* For the defender (only when not AI turn) */
+#board.defender:not(.ai-turn) td.⚪:hover, 
+#board.defender:not(.ai-turn) td.⬜:hover {
     cursor: pointer;
     background-color: rgba(50, 50, 50, 0.1);
+}
+
+/* Disable pointer cursor on pieces during AI turn */
+#board.ai-turn td.⚫,
+#board.ai-turn td.⚪,
+#board.ai-turn td.⬜ {
+    cursor: default;
 }
 
 /* Light squares */
@@ -414,21 +421,33 @@ input[type="radio"]:focus {
 /* Animation keyframes */
 @keyframes flash {
     0%, 100% { background-color: inherit; }
-    50% { background-color: #ffff99; }
+    50% { background-color: rgba(255, 255, 153, 0.4); }
 }
 
 @keyframes fadeOut {
-    from { opacity: 1; transform: scale(1); }
-    to { opacity: 0; transform: scale(0.3); }
+    from { 
+        opacity: 1; 
+        transform: scale(1); 
+        color: inherit;
+    }
+    to { 
+        opacity: 0; 
+        transform: scale(0.5); 
+        color: transparent;
+    }
 }
 
 /* Animation classes */
 .flash-animation {
-    animation: flash 0.6s ease-in-out;
+    animation: flash 0.3s ease-in-out;
 }
 
 .fade-out-animation {
-    animation: fadeOut 0.4s ease-in-out forwards;
+    color: inherit;
+}
+
+.fade-out-animation::first-line {
+    animation: fadeOut 0.3s ease-out forwards;
 }
 
 

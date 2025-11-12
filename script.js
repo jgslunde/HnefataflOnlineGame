@@ -249,19 +249,31 @@ function capturePieces(source, target, boardElement, callback) {
     // Animate captures if any
     if (capturedCells.length > 0) {
         capturedCells.forEach(cell => {
-            cell.classList.add('fade-out-animation');
+            // Create a span wrapper for the piece text to animate
+            const piece = getPieceFromCell(cell);
+            const span = document.createElement('span');
+            span.textContent = piece;
+            span.style.display = 'inline-block';
+            span.style.animation = 'fadeOut 0.3s ease-out forwards';
+            
+            // Replace text content with span
+            setPieceInCell(cell, '');
+            cell.appendChild(span);
         });
         
         // Remove pieces after animation completes
         setTimeout(() => {
             capturedCells.forEach(cell => {
+                // Remove the animated span and ensure cell is empty
+                const span = cell.querySelector('span');
+                if (span) span.remove();
                 setPieceInCell(cell, '');
-                cell.classList.remove('fade-out-animation');
+                cell.className = ''; // Clear all classes
             });
             
             // Call callback after captures are complete
             if (callback) callback();
-        }, 400); // Match fadeOut animation duration
+        }, 300); // Match fadeOut animation duration
     } else {
         // No captures, call callback immediately
         if (callback) callback();
@@ -622,9 +634,9 @@ function movePiece(sourceCell, targetCell) {
     // Get the piece before we start animations
     const piece = getPieceFromCell(sourceCell);
     
-    // Flash both cells
-    sourceCell.classList.add('flash-animation');
-    targetCell.classList.add('flash-animation');
+    // Don't flash cells - removed for cleaner animation
+    // sourceCell.classList.add('flash-animation');
+    // targetCell.classList.add('flash-animation');
     
     // Create a floating piece element for animation
     const sourceRect = sourceCell.getBoundingClientRect();
@@ -643,7 +655,7 @@ function movePiece(sourceCell, targetCell) {
     floatingPiece.style.justifyContent = 'center';
     floatingPiece.style.pointerEvents = 'none';
     floatingPiece.style.zIndex = '1000';
-    floatingPiece.style.transition = 'all 0.4s ease-in-out';
+    floatingPiece.style.transition = 'all 0.5s ease-in-out';
     
     document.body.appendChild(floatingPiece);
     
@@ -671,7 +683,7 @@ function movePiece(sourceCell, targetCell) {
         // Add appropriate class to the destination
         targetCell.classList.add(piece);
         
-        // Remove flash animation
+        // Remove flash animation (if any were added)
         sourceCell.classList.remove('flash-animation');
         targetCell.classList.remove('flash-animation');
         
@@ -702,11 +714,32 @@ function movePiece(sourceCell, targetCell) {
         saveBoardState();
         
         if ((gameMode[currentPlayer] === 'AI') && (!gameOver)) {
-            makeAIMove();
-        }else if(!document.getElementById("AI-eval").classList.contains('hidden')){
-            getAIBestMove(boardElement, currentPlayer);
+            // Update visualizations first, THEN start AI move
+            // This ensures the human player's position evaluation is displayed
+            // before the AI starts thinking
+            setTimeout(async () => {
+                if (policyMode !== 'off') {
+                    updatePolicyVisualization();
+                }
+                if (evalMode !== 'off') {
+                    await updateEvaluation();
+                }
+                // Start AI move after visualizations are updated
+                makeAIMove();
+            }, 100);
+        } else {
+            // Only update visualizations if it's not AI's turn (to avoid blocking)
+            if (policyMode !== 'off') {
+                updatePolicyVisualization();
+            }
+            if (evalMode !== 'off') {
+                updateEvaluation();
+            }
+            if(!document.getElementById("AI-eval").classList.contains('hidden')){
+                getAIBestMove(boardElement, currentPlayer);
+            }
         }
-    }, 400); // Match transition duration
+    }, 500); // Match transition duration (doubled from 250ms)
 }
 
 
@@ -728,27 +761,44 @@ function makeAIMove() {
     console.log(`[Script] makeAIMove called, AI type: ${aiType}, player: ${currentPlayer}`);
     
     if (aiType === 'mcts') {
-        // Use MCTS AI (async)
-        aiMoveTimeout = setTimeout(async () => {
+        // Use MCTS AI (async) - no delay since MCTS now yields to browser
+        (async () => {
+            // Check if game is still active before executing move
+            if (gameOver || gameMode[currentPlayer] !== 'AI') {
+                console.log("[Script] Game over or player changed, canceling MCTS move");
+                return;
+            }
             console.log("[Script] Making MCTS move...");
             const move = await getMCTSBestMove(boardElement, currentPlayer);
+            // Check once more after async operation
+            if (gameOver) {
+                console.log("[Script] Game over after MCTS calculation, canceling move");
+                return;
+            }
             if (move) {
                 console.log("[Script] Executing MCTS move");
                 movePiece(move.piece, move.target);
             } else {
                 console.error("[Script] No move returned from MCTS");
             }
-        }, 600);
+        })();
     } else {
-        // Use tree-search AI (original)
-        aiMoveTimeout = setTimeout(() => {
-            console.log("[Script] Making tree-search move...");
-            const move = getAIBestMove(boardElement, currentPlayer);
-            if (move) {
-                console.log("[Script] Executing tree-search move");
-                movePiece(move.piece, move.target);
-            }
-        }, 600);
+        // Use tree-search AI (synchronous C++ code - will block)
+        // No delay needed, but note this will freeze the UI during calculation
+        if (gameOver || gameMode[currentPlayer] !== 'AI') {
+            console.log("[Script] Game over or player changed, canceling tree-search move");
+            return;
+        }
+        console.log("[Script] Making tree-search move...");
+        const move = getAIBestMove(boardElement, currentPlayer);
+        if (gameOver) {
+            console.log("[Script] Game over after tree-search calculation, canceling move");
+            return;
+        }
+        if (move) {
+            console.log("[Script] Executing tree-search move");
+            movePiece(move.piece, move.target);
+        }
     }
 }
 
@@ -760,6 +810,18 @@ function togglePlayer() {
         currentPlayer = 'attacker';
         boardElement.className = 'attacker';
     }
+
+    // Add ai-turn class if current player is AI
+    if (gameMode[currentPlayer] === 'AI') {
+        boardElement.classList.add('ai-turn');
+    } else {
+        boardElement.classList.remove('ai-turn');
+    }
+
+    // Clear all cell highlighting and selections immediately
+    deselectAll(boardElement);
+    removeHighlights(boardElement);
+    selectedPiece = null;
 
     // Highlight the text of whoever has the turn:
     const attackerLabel = document.getElementById("attacker-label");
@@ -776,13 +838,8 @@ function togglePlayer() {
     // Clear cache for new position
     clearMCTSCache();
     
-    // Refresh visualizations for new player
-    if (policyMode !== 'off') {
-        updatePolicyVisualization();
-    }
-    if (evalMode !== 'off') {
-        updateEvaluation();
-    }
+    // Don't refresh visualizations here - they will be refreshed after animations complete
+    // This prevents MCTS from blocking animations
 }
 
 let gameOver = false;
@@ -889,6 +946,11 @@ function startGame(attackerMode, defenderMode) {
 // Event listener for piece selection or movement
 function handleCellClick(event) {
     if (gameOver) return;
+    
+    // Don't allow piece selection if current player is AI
+    if (gameMode[currentPlayer] === 'AI') {
+        return;
+    }
     
     // Get the td cell, even if clicking on child elements (like policy overlay)
     let cell = event.target;
@@ -1060,6 +1122,135 @@ document.getElementById('temperature-slider').addEventListener('input', function
     console.log(`[Settings] Temperature set to ${mctsTemperature}`);
 });
 
+// Model selector - populate with available ONNX models
+async function populateModelSelector() {
+    const modelSelect = document.getElementById('model-select');
+    
+    // List of known models (fallback)
+    let knownModels = [
+        'checkpoint_small_iter_150.onnx',
+    ];
+    
+    try {
+        // Try to fetch models list from JSON file
+        const response = await fetch('list_models.json');
+        if (response.ok) {
+            const data = await response.json();
+            if (data.models && Array.isArray(data.models) && data.models.length > 0) {
+                knownModels = data.models;
+                console.log('[Settings] Loaded models from list_models.json');
+            }
+        }
+    } catch (error) {
+        console.log('[Settings] Could not load list_models.json, using fallback');
+    }
+    
+    // Try directory listing as alternative
+    try {
+        const response = await fetch('checkpoints/');
+        if (response.ok) {
+            const text = await response.text();
+            
+            // Parse HTML to find .onnx files
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(text, 'text/html');
+            const links = doc.querySelectorAll('a');
+            
+            const onnxFiles = [];
+            for (const link of links) {
+                const href = link.getAttribute('href');
+                if (href && href.endsWith('.onnx')) {
+                    // Remove any path prefix
+                    const fileName = href.split('/').pop();
+                    if (!onnxFiles.includes(fileName)) {
+                        onnxFiles.push(fileName);
+                    }
+                }
+            }
+            
+            // Use found files if any
+            if (onnxFiles.length > 0) {
+                knownModels = onnxFiles;
+                console.log('[Settings] Loaded models from directory listing');
+            }
+        }
+    } catch (error) {
+        console.log('[Settings] Directory listing not available');
+    }
+    
+    // Sort files alphabetically
+    knownModels.sort();
+    
+    // Populate dropdown
+    modelSelect.innerHTML = '';
+    for (const file of knownModels) {
+        const option = document.createElement('option');
+        const fullPath = `checkpoints/${file}`;
+        option.value = fullPath;
+        option.textContent = file;
+        
+        // Select current model
+        if (window.mctsAgent && window.mctsAgent.cur|rentModelPath === fullPath) {
+            option.selected = true;
+        } else if (fullPath.includes('checkpoint_small_iter_150.onnx')) {
+            option.selected = true; // Default selection
+        }
+        
+        modelSelect.appendChild(option);
+    }
+    
+    console.log(`[Settings] Loaded ${knownModels.length} ONNX model(s)`);
+}
+
+// Model selector change handler
+document.getElementById('model-select').addEventListener('change', async function() {
+    const newModelPath = this.value;
+    console.log(`[Settings] Switching to model: ${newModelPath}`);
+    
+    try {
+        // Show loading indicator
+        this.disabled = true;
+        const originalText = this.options[this.selectedIndex].text;
+        this.options[this.selectedIndex].text = `Loading ${originalText}...`;
+        
+        // Clear all caches before reloading
+        clearMCTSCache();
+        
+        // Reinitialize agent with new model
+        const agent = getMCTSAgent();
+        await agent.initialize(newModelPath);
+        
+        // Restore UI
+        this.options[this.selectedIndex].text = originalText;
+        this.disabled = false;
+        
+        console.log(`[Settings] Successfully loaded model: ${newModelPath}`);
+        
+        // Update visualizations if in use
+        if (evalMode !== 'off') {
+            updateEvaluation();
+        }
+        if (policyMode !== 'off') {
+            updatePolicyVisualization();
+        }
+    } catch (error) {
+        console.error('[Settings] Error loading model:', error);
+        alert(`Failed to load model: ${error.message || error}`);
+        
+        // Revert selection
+        for (let i = 0; i < this.options.length; i++) {
+            if (window.mctsAgent && this.options[i].value === window.mctsAgent.currentModelPath) {
+                this.selectedIndex = i;
+                break;
+            }
+        }
+        this.disabled = false;
+    }
+});
+
+// Populate model selector on page load
+populateModelSelector();
+
 // MCTS simulations slider
 document.getElementById('mcts-simulations-slider').addEventListener('input', function() {
     mctsSimulationCount = parseInt(this.value);
@@ -1098,6 +1289,13 @@ document.getElementById('restart-btn').addEventListener('click', function() {
     const defenderLabel = document.getElementById("defender-label");
     attackerLabel.classList.add('active-player');
     defenderLabel.classList.remove('active-player');
+    
+    // Add/remove ai-turn class based on starting player
+    if (gameMode[currentPlayer] === 'AI') {
+        boardElement.classList.add('ai-turn');
+    } else {
+        boardElement.classList.remove('ai-turn');
+    }
     
     // If AI is first player, make move
     if (gameMode[currentPlayer] === 'AI' && !gameOver) {

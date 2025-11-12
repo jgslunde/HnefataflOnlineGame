@@ -230,13 +230,23 @@ class MCTS {
             return new Map();
         }
         
-        // Run simulations
-        for (let sim = 0; sim < this.numSimulations; sim++) {
-            if (sim % 20 === 0) {
-                console.log(`[MCTS] Simulation ${sim + 1}/${this.numSimulations}`);
+        // Run simulations in batches to avoid freezing the UI
+        const batchSize = 10; // Process 10 simulations at a time
+        for (let sim = 0; sim < this.numSimulations; sim += batchSize) {
+            const batchEnd = Math.min(sim + batchSize, this.numSimulations);
+            
+            // Run a batch of simulations
+            for (let i = sim; i < batchEnd; i++) {
+                if (i % 20 === 0) {
+                    console.log(`[MCTS] Simulation ${i + 1}/${this.numSimulations}`);
+                }
+                await this.runSimulation(boardElement);
             }
             
-            await this.runSimulation(boardElement);
+            // Yield control to browser to keep UI responsive
+            if (batchEnd < this.numSimulations) {
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
         }
         
         const elapsedTime = ((performance.now() - startTime) / 1000).toFixed(2);
