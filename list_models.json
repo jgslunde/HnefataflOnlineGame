@@ -3,6 +3,6 @@
     "checkpoint_small_iter_190.onnx",
     "checkpoint_small_iter_150.onnx",
     "checkpoint_medium_iter_50.onnx",
-    "checkpoint_medium_iter_90.onnx"
+    "checkpoint_medium_iter_66.onnx"
   ]
 }
