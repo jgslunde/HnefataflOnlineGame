@@ -1128,7 +1128,7 @@ async function populateModelSelector() {
     
     // List of known models (fallback)
     let knownModels = [
-        'checkpoint_small_iter_150.onnx',
+        'checkpoint_small_iter_190.onnx',
     ];
     
     try {
@@ -1192,7 +1192,7 @@ async function populateModelSelector() {
         // Select current model
         if (window.mctsAgent && window.mctsAgent.currentModelPath === fullPath) {
             option.selected = true;
-        } else if (fullPath.includes('checkpoint_small_iter_150.onnx')) {
+        } else if (fullPath.includes('checkpoint_small_iter_190.onnx')) {
             option.selected = true; // Default selection
         }
         
