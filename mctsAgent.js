@@ -10,7 +10,7 @@ class MCTSAgent {
         this.mcts = null;
         this.isLoading = false;
         this.isReady = false;
-        this.currentModelPath = 'checkpoints/checkpoint_small_iter_190.onnx'; // Default model
+        this.currentModelPath = 'checkpoints/checkpoint_small_iter_300.onnx'; // Default model
         
         console.log("[MCTSAgent] Created, waiting for initialization");
     }
