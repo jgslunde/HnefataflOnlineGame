@@ -54,11 +54,9 @@ class MCTSNode {
      */
     expand(legalMoves, policyProbs) {
         if (this.isExpanded) {
-            console.warn("[MCTSNode] Attempted to expand already expanded node");
+            // Already expanded - this is a safety guard and is normal during MCTS
             return;
         }
-        
-        console.log(`[MCTSNode] Expanding node with ${legalMoves.length} legal moves`);
         
         // Extract probabilities for legal moves and normalize
         const probs = new Float32Array(legalMoves.length);
@@ -75,7 +73,6 @@ class MCTSNode {
                 probs[i] /= probSum;
             }
         } else {
-            console.warn("[MCTSNode] Policy sum is 0, using uniform distribution");
             const uniform = 1.0 / legalMoves.length;
             probs.fill(uniform);
         }
@@ -96,7 +93,6 @@ class MCTSNode {
         }
         
         this.isExpanded = true;
-        console.log(`[MCTSNode] Expanded node, created ${this.children.size} children`);
     }
     
     /**
@@ -198,8 +194,6 @@ class MCTS {
         this.cPuct = cPuct;
         this.root = null;
         this.lastRawPolicy = null; // Store last raw policy output for visualization
-        
-        console.log(`[MCTS] Initialized with ${numSimulations} simulations, c_puct=${cPuct}`);
     }
     
     /**
@@ -209,12 +203,28 @@ class MCTS {
      * @returns {Map} map from moveKey to visit probability
      */
     async search(boardElement, player) {
+        // Validate board state before starting search
+        if (!boardElement || !boardElement.rows || boardElement.rows.length !== 7) {
+            console.error('[MCTS] Invalid board element');
+            throw new Error('Invalid board state for MCTS search');
+        }
+        
+        // Check for animated spans (capture in progress)
+        for (let r = 0; r < 7; r++) {
+            if (!boardElement.rows[r] || !boardElement.rows[r].cells || boardElement.rows[r].cells.length !== 7) {
+                console.error(`[MCTS] Invalid board row ${r}`);
+                throw new Error(`Invalid board row ${r}`);
+            }
+            for (let c = 0; c < 7; c++) {
+                const cell = boardElement.rows[r].cells[c];
+                if (cell.querySelector('span')) {
+                    console.error(`[MCTS] Cell (${r},${c}) has animated span - board state invalid for search`);
+                    throw new Error('Cannot start MCTS search while capture animations are in progress');
+                }
+            }
+        }
+        
         console.log(`[MCTS] Starting search for ${player} with ${this.numSimulations} simulations`);
-        
-        // Log board state for debugging
-        const boardState = this.captureGameState(boardElement, player);
-        console.log(`[MCTS] Board state:`, boardState.board.map(row => row.join('')).join(' / '));
-        
         const startTime = performance.now();
         
         // Create root node with current game state
@@ -237,9 +247,6 @@ class MCTS {
             
             // Run a batch of simulations
             for (let i = sim; i < batchEnd; i++) {
-                if (i % 20 === 0) {
-                    console.log(`[MCTS] Simulation ${i + 1}/${this.numSimulations}`);
-                }
                 await this.runSimulation(boardElement);
             }
             
@@ -252,12 +259,10 @@ class MCTS {
         const elapsedTime = ((performance.now() - startTime) / 1000).toFixed(2);
         console.log(`[MCTS] Search completed in ${elapsedTime}s`);
         console.log(`[MCTS] Root visits: ${this.root.visitCount}, Mean value: ${this.root.meanValue.toFixed(3)}`);
-        console.log(`[MCTS] Root children count: ${this.root.children.size}`);
         
         // Get visit distribution
         const distribution = this.root.getVisitDistribution();
         
-        console.log(`[MCTS] Distribution size: ${distribution.size}`);
         if (distribution.size === 0) {
             console.error("[MCTS] ERROR: Distribution is empty despite having children!");
         }
@@ -354,8 +359,30 @@ class MCTS {
         // Get state representation (4 planes: attackers, defenders, king, current_player)
         const state = this.getStateRepresentation(boardElement, player);
         
-        // Run neural network inference
-        const feeds = { input: new ort.Tensor('float32', state, [1, 4, 7, 7]) };
+        // Validate state tensor
+        if (!state || state.length !== 196) {
+            console.error(`[MCTS] Invalid state tensor! Length: ${state?.length}`);
+            throw new Error('Invalid state tensor for neural network');
+        }
+        
+        // Check for NaN or Infinity
+        for (let i = 0; i < state.length; i++) {
+            if (!isFinite(state[i])) {
+                console.error(`[MCTS] Invalid value in state tensor at index ${i}: ${state[i]}`);
+                throw new Error('State tensor contains invalid values');
+            }
+        }
+        
+        // CRITICAL FIX: Create a defensive copy to avoid buffer issues
+        // ONNX.js may be mutating or detaching the buffer internally
+        const stateCopy = new Float32Array(state);
+        
+        // WORKAROUND: Add tiny delay to let ONNX.js WebAssembly backend clean up between calls
+        // This prevents internal state corruption in rapid successive inference calls
+        await new Promise(resolve => setTimeout(resolve, 1));
+        
+        // Run neural network inference with the copy
+        const feeds = { input: new ort.Tensor('float32', stateCopy, [1, 4, 7, 7]) };
         const results = await this.network.run(feeds);
         
         // Extract policy and value
@@ -395,19 +422,28 @@ class MCTS {
         
         const playerValue = player === 'attacker' ? 0.0 : 1.0;
         
+        // Helper function to extract piece from cell
+        const getPiece = (cell) => {
+            for (let node of cell.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    return node.textContent.trim();
+                }
+            }
+            return '';
+        };
+        
         for (let r = 0; r < 7; r++) {
             for (let c = 0; c < 7; c++) {
-                const cell = boardElement.rows[r].cells[c];
+                const cell = boardElement.rows[r]?.cells?.[c];
+                if (!cell) {
+                    console.warn(`[MCTS] Cell at (${r},${c}) is undefined!`);
+                    continue;
+                }
+                
                 const idx = r * 7 + c;
                 
-                // Get the first text node (ignore policy overlay divs)
-                let piece = '';
-                for (let node of cell.childNodes) {
-                    if (node.nodeType === Node.TEXT_NODE) {
-                        piece = node.textContent.trim();
-                        break;
-                    }
-                }
+                // Get piece from cell
+                const piece = getPiece(cell);
                 
                 if (piece === '⚫') {
                     state[attackersPlane + idx] = 1.0;
@@ -584,16 +620,23 @@ class MCTS {
             for (let c = 0; c < 7; c++) {
                 const cellClone = document.createElement('td');
                 
-                // Only copy the piece text, not policy overlay divs
+                // Only copy the piece text, not policy overlay divs or animated spans
                 const originalCell = boardElement.rows[r].cells[c];
-                let piece = '';
-                for (let node of originalCell.childNodes) {
-                    if (node.nodeType === Node.TEXT_NODE) {
-                        piece = node.textContent.trim();
-                        break;
+                
+                // Skip cells with animated spans (capture in progress)
+                if (originalCell.querySelector('span')) {
+                    console.warn(`[MCTS] Cell (${r},${c}) has animated span during clone, treating as empty`);
+                    cellClone.textContent = '';
+                } else {
+                    let piece = '';
+                    for (let node of originalCell.childNodes) {
+                        if (node.nodeType === Node.TEXT_NODE) {
+                            piece = node.textContent.trim();
+                            break;
+                        }
                     }
+                    cellClone.textContent = piece;
                 }
-                cellClone.textContent = piece;
                 
                 rowClone.appendChild(cellClone);
             }

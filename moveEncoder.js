@@ -33,8 +33,6 @@ class MoveEncoder {
             2: [0, -1],  // left
             3: [0, 1]    // right
         };
-        
-        console.log("[MoveEncoder] Initialized with 1176 possible move encodings");
     }
     
     /**
@@ -144,9 +142,6 @@ class MoveEncoder {
             }
         }
         
-        const legalCount = mask.reduce((sum, val) => sum + val, 0);
-        console.log(`[MoveEncoder] Found ${legalCount} legal moves for ${player}`);
-        
         return mask;
     }
     
@@ -199,7 +194,6 @@ class MoveEncoder {
             }
         }
         
-        console.log(`[MoveEncoder] getAllLegalMoves found ${moves.length} legal moves for ${player}`);
         return moves;
     }
 }

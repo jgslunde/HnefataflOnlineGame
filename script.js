@@ -706,55 +706,56 @@ function movePiece(sourceCell, targetCell) {
         targetCell.classList.remove('flash-animation');
         
         // Capture pieces (with their own animations)
-        // Use callback to record position after captures are complete
+        // Use callback to record position and update visualizations after captures are complete
         capturePieces(sourceCell, targetCell, boardElement, () => {
             // Record the position after the move and captures are complete
             recordPosition(boardElement, currentPlayer);
-        });
-        
-        // Clear legal move highlights
-        for (let row of boardElement.rows) {
-            for (let cell of row.cells) {
-                cell.classList.remove('legal-move');
+            
+            // NOW it's safe to update visualizations (captures are done)
+            // Clear legal move highlights
+            for (let row of boardElement.rows) {
+                for (let cell of row.cells) {
+                    cell.classList.remove('legal-move');
+                }
             }
-        }
-        
-        let win = checkForVictory(boardElement);
-        if(win !== 0){
-            return;
-        }
+            
+            let win = checkForVictory(boardElement);
+            if(win !== 0){
+                return;
+            }
 
-        // Switch turns
-        togglePlayer();
-        
-        // Save board state after turn has switched (for undo)
-        // This saves the board with the next player's turn
-        saveBoardState();
-        
-        if ((gameMode[currentPlayer] === 'AI') && (!gameOver)) {
-            // Update visualizations first, THEN start AI move
-            // This ensures the human player's position evaluation is displayed
-            // before the AI starts thinking
-            // Increased delay for mobile to ensure smooth animations
-            setTimeout(async () => {
+            // Switch turns
+            togglePlayer();
+            
+            // Save board state after turn has switched (for undo)
+            // This saves the board with the next player's turn
+            saveBoardState();
+            
+            if ((gameMode[currentPlayer] === 'AI') && (!gameOver)) {
+                // Update visualizations first, THEN start AI move
+                // This ensures the human player's position evaluation is displayed
+                // before the AI starts thinking
+                // Small delay to ensure UI updates have painted
+                setTimeout(async () => {
+                    if (policyMode !== 'off') {
+                        updatePolicyVisualization();
+                    }
+                    if (evalMode !== 'off') {
+                        await updateEvaluation();
+                    }
+                    // Start AI move after visualizations are updated
+                    makeAIMove();
+                }, 50);
+            } else {
+                // Update visualizations after human moves
                 if (policyMode !== 'off') {
                     updatePolicyVisualization();
                 }
                 if (evalMode !== 'off') {
-                    await updateEvaluation();
+                    updateEvaluation();
                 }
-                // Start AI move after visualizations are updated
-                makeAIMove();
-            }, 200);
-        } else {
-            // Update visualizations after human moves
-            if (policyMode !== 'off') {
-                updatePolicyVisualization();
             }
-            if (evalMode !== 'off') {
-                updateEvaluation();
-            }
-        }
+        });
     }, 500); // Match transition duration (doubled from 250ms)
 }
 
@@ -1173,11 +1174,13 @@ async function populateModelSelector() {
         console.log('[Settings] Could not load list_models.json, using fallback');
     }
     
-    // Try directory listing as alternative
+    // Try directory listing as alternative (only works if server has directory listing enabled)
     try {
-        const response = await fetch('checkpoints/');
+        const response = await fetch('checkpoints/', { method: 'HEAD' });
+        // Only try to parse if directory listing is available
         if (response.ok) {
-            const text = await response.text();
+            const textResponse = await fetch('checkpoints/');
+            const text = await textResponse.text();
             
             // Parse HTML to find .onnx files
             const parser = new DOMParser();
@@ -1203,7 +1206,7 @@ async function populateModelSelector() {
             }
         }
     } catch (error) {
-        console.log('[Settings] Directory listing not available');
+        // Directory listing not available - this is normal, fall back to list_models.json
     }
     
     // Sort files alphabetically
@@ -1389,7 +1392,8 @@ let mctsCache = {
     player: null,     // Player who's turn it is
     mctsResult: null, // Full MCTS result {move, policyData: {policy, visitCounts}, value}
     nnPolicy: null,   // Raw NN policy {policy, value}
-    nnValue: null     // Just the NN value output
+    nnValue: null,    // Just the NN value output
+    inProgress: null  // Promise for in-progress MCTS search (prevents race conditions)
 };
 
 // Helper to compute simple board hash
@@ -1410,6 +1414,7 @@ function clearMCTSCache() {
     mctsCache.mctsResult = null;
     mctsCache.nnPolicy = null;
     mctsCache.nnValue = null;
+    mctsCache.inProgress = null;
 }
 
 // Initialize MCTS agent on page load
@@ -1498,10 +1503,8 @@ function setPolicyMode(mode) {
     // Update dropdown value
     document.getElementById('policy-mode-select').value = mode;
     
-    // Clear cache when switching to MCTS-based modes
-    if (mode === 'nn-mcts' || mode === 'nn') {
-        clearMCTSCache();
-    }
+    // Don't clear cache when switching policy modes - reuse evaluation's MCTS result!
+    // Only clear cache for actual board changes (moves, undo, etc.)
     
     // Update policy visualization
     if (mode === 'off') {
@@ -1513,6 +1516,7 @@ function setPolicyMode(mode) {
 
 /**
  * Get or compute MCTS result for current position (with caching)
+ * This function handles race conditions when multiple callers request MCTS simultaneously
  */
 async function getMCTSResult() {
     const hash = getBoardHash(boardElement, currentPlayer);
@@ -1523,23 +1527,43 @@ async function getMCTSResult() {
         return mctsCache.mctsResult;
     }
     
+    // Check if a search is already in progress for this position
+    if (mctsCache.inProgress && mctsCache.boardHash === hash && mctsCache.player === currentPlayer) {
+        console.log("[MCTS Cache] Waiting for in-progress MCTS search to complete");
+        return await mctsCache.inProgress;
+    }
+    
     // Compute new MCTS result with configurable simulation count for move suggestions
     const simCount = mctsSimulationCount;  // Use global setting
     
     console.log("[MCTS Cache] Computing new MCTS result with", simCount, "simulations");
-    const result = await window.mctsAgent.getBestMove(boardElement, currentPlayer, simCount);
     
-    // Cache it, including the root value
-    if (result && window.mctsAgent.mcts.root) {
-        result.rootValue = window.mctsAgent.mcts.root.meanValue;
-        result.rootVisits = window.mctsAgent.mcts.root.visitCount;
+    // Create promise for this search and store it to prevent duplicate searches
+    const searchPromise = (async () => {
+        const result = await window.mctsAgent.getBestMove(boardElement, currentPlayer, simCount);
         
-        mctsCache.boardHash = hash;
-        mctsCache.player = currentPlayer;
-        mctsCache.mctsResult = result;
-    }
+        // Cache it, including the root value
+        if (result && window.mctsAgent.mcts.root) {
+            result.rootValue = window.mctsAgent.mcts.root.meanValue;
+            result.rootVisits = window.mctsAgent.mcts.root.visitCount;
+            
+            mctsCache.boardHash = hash;
+            mctsCache.player = currentPlayer;
+            mctsCache.mctsResult = result;
+        }
+        
+        // Clear in-progress marker
+        mctsCache.inProgress = null;
+        
+        return result;
+    })();
     
-    return result;
+    // Store the promise so other callers can wait for it
+    mctsCache.boardHash = hash;
+    mctsCache.player = currentPlayer;
+    mctsCache.inProgress = searchPromise;
+    
+    return await searchPromise;
 }
 
 /**
@@ -1573,12 +1597,10 @@ async function getNNPolicy() {
     
     // Check cache
     if (mctsCache.boardHash === hash && mctsCache.player === currentPlayer && mctsCache.nnPolicy) {
-        console.log("[MCTS Cache] Using cached NN policy");
         return mctsCache.nnPolicy;
     }
     
     // Compute new NN policy
-    console.log("[MCTS Cache] Computing new NN policy");
     const result = await window.mctsAgent.getPolicy(boardElement, currentPlayer);
     
     // Cache it
@@ -1603,15 +1625,32 @@ async function updatePolicyVisualization() {
     
     if (policyMode === 'heuristic') {
         // TODO: Implement heuristic-based move suggestions if desired
-        console.log("[Policy Viz] Heuristic mode not yet implemented");
         clearPolicyVisualization();
         return;
     }
     
     if (!window.mctsAgent || !window.mctsAgent.isReady) {
-        console.log("[Policy Viz] MCTS agent not ready");
         clearPolicyVisualization();
         return;
+    }
+    
+    // Validate board state before running visualization
+    if (!boardElement || !boardElement.rows || boardElement.rows.length !== 7) {
+        return;
+    }
+    
+    // Check if any cells are undefined or in animation state
+    for (let r = 0; r < 7; r++) {
+        if (!boardElement.rows[r] || !boardElement.rows[r].cells || boardElement.rows[r].cells.length !== 7) {
+            return;
+        }
+        // Check if any cell has animated spans (capture animation in progress)
+        for (let c = 0; c < 7; c++) {
+            const cell = boardElement.rows[r].cells[c];
+            if (cell.querySelector('span')) {
+                return;
+            }
+        }
     }
     
     try {
@@ -1649,9 +1688,8 @@ async function updatePolicyVisualization() {
                     source: 'mcts'
                 };
             } else {
-                console.error("[Policy Viz] MCTS result invalid, falling back to NN");
+                // Fallback to NN
                 const nnResult = await getNNPolicy();
-                // Apply softmax to convert logits to probabilities
                 const policyProbs = softmax(nnResult.policy);
                 policyData = {
                     policy: policyProbs,
@@ -1686,6 +1724,25 @@ async function updateEvaluation() {
     
     document.getElementById('AI-eval').classList.remove('hidden');
     
+    // Validate board state before running evaluation
+    if (!boardElement || !boardElement.rows || boardElement.rows.length !== 7) {
+        return;
+    }
+    
+    // Check if any cells are undefined or in animation state
+    for (let r = 0; r < 7; r++) {
+        if (!boardElement.rows[r] || !boardElement.rows[r].cells || boardElement.rows[r].cells.length !== 7) {
+            return;
+        }
+        // Check if any cell has animated spans (capture animation in progress)
+        for (let c = 0; c < 7; c++) {
+            const cell = boardElement.rows[r].cells[c];
+            if (cell.querySelector('span')) {
+                return;
+            }
+        }
+    }
+    
     try {
         let evalValue;
         
@@ -1702,7 +1759,6 @@ async function updateEvaluation() {
         } else if (evalMode === 'nn') {
             // Use raw NN value
             if (!window.mctsAgent || !window.mctsAgent.isReady) {
-                console.log("[Eval] MCTS agent not ready");
                 return;
             }
             const nnResult = await getNNPolicy();
@@ -1714,7 +1770,6 @@ async function updateEvaluation() {
         } else if (evalMode === 'nn-mcts') {
             // Use MCTS value
             if (!window.mctsAgent || !window.mctsAgent.isReady) {
-                console.log("[Eval] MCTS agent not ready");
                 return;
             }
             const mctsResult = await getMCTSResult();
@@ -1725,7 +1780,6 @@ async function updateEvaluation() {
                 if (currentPlayer === 'defender') {
                     evalValue = -evalValue;
                 }
-                console.log(`[Eval] MCTS root value (attacker perspective): ${evalValue}, visits: ${mctsResult.rootVisits}`);
             } else {
                 console.error("[Eval] MCTS result invalid or root value not found");
                 return;
@@ -1767,8 +1821,6 @@ async function visualizePolicyForAllPieces(policyData) {
     const encoder = new MoveEncoder();
     const legalMoves = encoder.getAllLegalMoves(boardElement, currentPlayer);
     
-    console.log(`[Policy Viz] visualizePolicyForAllPieces: ${legalMoves.length} legal moves`);
-    
     // Group moves by source piece
     const pieceProbs = new Map(); // Map from "row,col" to probability/count
     const pieceValues = new Map(); // Map from "row,col" to best value for moves from that piece
@@ -1803,11 +1855,8 @@ async function visualizePolicyForAllPieces(policyData) {
         }
     }
     
-    console.log(`[Policy Viz] Piece probabilities/counts:`, Array.from(pieceProbs.entries()).slice(0, 5));
-    
     // Normalize to get percentages
     const total = Array.from(pieceProbs.values()).reduce((a, b) => a + b, 0);
-    console.log(`[Policy Viz] Total: ${total}, Source: ${policyData.source}`);
     
     if (total > 0) {
         for (const [key, probValue] of pieceProbs.entries()) {
@@ -1815,7 +1864,6 @@ async function visualizePolicyForAllPieces(policyData) {
             const value = pieceValues.get(key) || 0;
             const [row, col] = key.split(',').map(Number);
             const cell = boardElement.rows[row].cells[col];
-            console.log(`[Policy Viz] Piece at (${row},${col}): prob=${probValue}, percentage=${percentage}%, value=${value}`);
             showPolicyOnCell(cell, percentage, value);
         }
     }

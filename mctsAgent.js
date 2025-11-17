@@ -211,6 +211,20 @@ class MCTSAgent {
             // Get state representation (same as MCTS.getStateRepresentation)
             const state = this.getStateRepresentation(boardElement, player);
             
+            // Validate state tensor
+            if (!state || state.length !== 196) {
+                console.error(`[MCTSAgent] Invalid state tensor! Length: ${state?.length}`);
+                return null;
+            }
+            
+            // Check for NaN or Infinity
+            for (let i = 0; i < state.length; i++) {
+                if (!isFinite(state[i])) {
+                    console.error(`[MCTSAgent] Invalid value in state tensor at index ${i}: ${state[i]}`);
+                    return null;
+                }
+            }
+            
             // Run inference
             const feeds = { input: new ort.Tensor('float32', state, [1, 4, 7, 7]) };
             const results = await this.session.run(feeds);
@@ -249,19 +263,28 @@ class MCTSAgent {
         
         const playerValue = player === 'attacker' ? 0.0 : 1.0;
         
+        // Helper function to extract piece from cell
+        const getPiece = (cell) => {
+            for (let node of cell.childNodes) {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    return node.textContent.trim();
+                }
+            }
+            return '';
+        };
+        
         for (let r = 0; r < 7; r++) {
             for (let c = 0; c < 7; c++) {
-                const cell = boardElement.rows[r].cells[c];
+                const cell = boardElement.rows[r]?.cells?.[c];
+                if (!cell) {
+                    console.warn(`[MCTSAgent] Cell at (${r},${c}) is undefined!`);
+                    continue;
+                }
+                
                 const idx = r * 7 + c;
                 
-                // Get the first text node (ignore policy overlay divs)
-                let piece = '';
-                for (let node of cell.childNodes) {
-                    if (node.nodeType === Node.TEXT_NODE) {
-                        piece = node.textContent.trim();
-                        break;
-                    }
-                }
+                // Get piece from cell
+                const piece = getPiece(cell);
                 
                 if (piece === '⚫') {
                     state[attackersPlane + idx] = 1.0;
