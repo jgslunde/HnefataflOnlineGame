@@ -567,7 +567,10 @@ function highlightLegalMoves(source, boardElement) {
 
 function deselectAll(boardElement) {
     const cells = boardElement.querySelectorAll('td');
-    cells.forEach(cell => cell.classList.remove('selected'));
+    cells.forEach(cell => {
+        cell.classList.remove('selected');
+        cell.blur(); // Clear focus state on mobile
+    });
 }
 
 function resetBoard() {
@@ -634,6 +637,10 @@ function movePiece(sourceCell, targetCell) {
     // Get the piece before we start animations
     const piece = getPieceFromCell(sourceCell);
     
+    // Force a layout flush to ensure positions are up-to-date (helps with mobile)
+    // This is especially important when called from AI after visualization updates
+    sourceCell.offsetHeight;  // Force reflow
+    
     // Don't flash cells - removed for cleaner animation
     // sourceCell.classList.add('flash-animation');
     // targetCell.classList.add('flash-animation');
@@ -662,10 +669,13 @@ function movePiece(sourceCell, targetCell) {
     // Clear the source cell immediately (but keep the class for background highlighting)
     setPieceInCell(sourceCell, '');
     
-    // Trigger animation on next frame
+    // Use double requestAnimationFrame to ensure browser has painted
+    // This is crucial for mobile devices
     requestAnimationFrame(() => {
-        floatingPiece.style.left = targetRect.left + 'px';
-        floatingPiece.style.top = targetRect.top + 'px';
+        requestAnimationFrame(() => {
+            floatingPiece.style.left = targetRect.left + 'px';
+            floatingPiece.style.top = targetRect.top + 'px';
+        });
     });
     
     // After animation completes
@@ -676,12 +686,20 @@ function movePiece(sourceCell, targetCell) {
         // Move the piece to the new cell
         setPieceInCell(targetCell, piece);
         
-        // Clear class of source and destination
+        // Clear class of source and destination (including 'selected')
         sourceCell.className = '';
         targetCell.className = '';
         
         // Add appropriate class to the destination
         targetCell.classList.add(piece);
+        
+        // Explicitly remove 'selected' from both cells to be absolutely sure
+        sourceCell.classList.remove('selected');
+        targetCell.classList.remove('selected');
+        
+        // Clear any selection globally
+        deselectAll(boardElement);
+        selectedPiece = null;
         
         // Remove flash animation (if any were added)
         sourceCell.classList.remove('flash-animation');
@@ -717,6 +735,7 @@ function movePiece(sourceCell, targetCell) {
             // Update visualizations first, THEN start AI move
             // This ensures the human player's position evaluation is displayed
             // before the AI starts thinking
+            // Increased delay for mobile to ensure smooth animations
             setTimeout(async () => {
                 if (policyMode !== 'off') {
                     updatePolicyVisualization();
@@ -726,7 +745,7 @@ function movePiece(sourceCell, targetCell) {
                 }
                 // Start AI move after visualizations are updated
                 makeAIMove();
-            }, 100);
+            }, 200);
         } else {
             // Update visualizations after human moves
             if (policyMode !== 'off') {
@@ -819,6 +838,10 @@ function togglePlayer() {
     deselectAll(boardElement);
     removeHighlights(boardElement);
     selectedPiece = null;
+    
+    // Extra safety: force remove 'selected' class from ALL cells
+    const allCells = boardElement.querySelectorAll('td');
+    allCells.forEach(cell => cell.classList.remove('selected'));
 
     // Highlight the text of whoever has the turn:
     const attackerLabel = document.getElementById("attacker-label");

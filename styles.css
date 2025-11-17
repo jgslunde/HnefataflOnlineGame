@@ -201,17 +201,20 @@ td {
     user-select: none;  /* Prevent text selection */
 }
 
-/* For the attacker (only when not AI turn) */
-#board.attacker:not(.ai-turn) td.⚫:hover {
-    cursor: pointer;
-    background-color: rgba(50, 50, 50, 0.1);
-}
+/* Hover effects - only on devices with true hover capability (not touch screens) */
+@media (hover: hover) {
+    /* For the attacker (only when not AI turn) */
+    #board.attacker:not(.ai-turn) td.⚫:hover {
+        cursor: pointer;
+        background-color: rgba(50, 50, 50, 0.1);
+    }
 
-/* For the defender (only when not AI turn) */
-#board.defender:not(.ai-turn) td.⚪:hover, 
-#board.defender:not(.ai-turn) td.⬜:hover {
-    cursor: pointer;
-    background-color: rgba(50, 50, 50, 0.1);
+    /* For the defender (only when not AI turn) */
+    #board.defender:not(.ai-turn) td.⚪:hover, 
+    #board.defender:not(.ai-turn) td.⬜:hover {
+        cursor: pointer;
+        background-color: rgba(50, 50, 50, 0.1);
+    }
 }
 
 /* Disable pointer cursor on pieces during AI turn */
@@ -219,6 +222,14 @@ td {
 #board.ai-turn td.⚪,
 #board.ai-turn td.⬜ {
     cursor: default;
+}
+
+/* Prevent mobile tap highlight and active states */
+td {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 /* Light squares */
@@ -573,8 +584,27 @@ input[type="radio"]:focus {
         font-size: 14px;
     }
 
+    td.legal-move::after {
+        width: 15px;  /* Smaller indicator for mobile */
+        height: 15px;
+    }
+
+    .policy-overlay {
+        font-size: 9px;  /* Smaller but still readable on mobile */
+        padding: 1px 3px;
+        bottom: 1px;
+        right: 1px;
+    }
+
     #eval-bar {
-        width: 50px;
+        width: 3px;  /* Thin red line, not 50px */
         font-size: 14px;
+    }
+    
+    #eval-bar-container {
+        width: 100%;
+        height: 12px;  /* Fixed height instead of vh */
+        border-radius: 3px;
+        margin-top: 5px;
     }
 }
