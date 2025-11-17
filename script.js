@@ -728,15 +728,12 @@ function movePiece(sourceCell, targetCell) {
                 makeAIMove();
             }, 100);
         } else {
-            // Only update visualizations if it's not AI's turn (to avoid blocking)
+            // Update visualizations after human moves
             if (policyMode !== 'off') {
                 updatePolicyVisualization();
             }
             if (evalMode !== 'off') {
                 updateEvaluation();
-            }
-            if(!document.getElementById("AI-eval").classList.contains('hidden')){
-                getAIBestMove(boardElement, currentPlayer);
             }
         }
     }, 500); // Match transition duration (doubled from 250ms)
@@ -1120,6 +1117,14 @@ document.getElementById('temperature-slider').addEventListener('input', function
     mctsTemperature = parseFloat(this.value);
     document.getElementById('temperature-value').textContent = mctsTemperature.toFixed(1);
     console.log(`[Settings] Temperature set to ${mctsTemperature}`);
+    
+    // Clear cache when temperature changes (affects move selection in MCTS)
+    clearMCTSCache();
+    
+    // Update visualizations if they're active
+    if (policyMode !== 'off') {
+        updatePolicyVisualization();
+    }
 });
 
 // Model selector - populate with available ONNX models
@@ -1256,8 +1261,17 @@ document.getElementById('mcts-simulations-slider').addEventListener('input', fun
     mctsSimulationCount = parseInt(this.value);
     document.getElementById('mcts-simulations-value').textContent = mctsSimulationCount;
     console.log(`[Settings] MCTS simulation count set to ${mctsSimulationCount}`);
+    
     // Clear cache when simulation count changes
     clearMCTSCache();
+    
+    // Update visualizations if they're active
+    if (policyMode !== 'off') {
+        updatePolicyVisualization();
+    }
+    if (evalMode !== 'off') {
+        updateEvaluation();
+    }
 });
 
 // Undo button
@@ -1270,11 +1284,25 @@ document.getElementById('undo-btn').addEventListener('click', function() {
         const previousState = moveHistory[moveHistory.length - 1];
         restoreBoardState(previousState);
         gameOver = false;
+        
+        // If after undo it's an AI's turn, make AI move
+        if (gameMode[currentPlayer] === 'AI' && !gameOver) {
+            setTimeout(() => {
+                makeAIMove();
+            }, 100);
+        }
     } else if (moveHistory.length === 1) {
         // Only initial state exists, reset to it
         const initialState = moveHistory[0];
         restoreBoardState(initialState);
         gameOver = false;
+        
+        // If initial position has AI to move, make AI move
+        if (gameMode[currentPlayer] === 'AI' && !gameOver) {
+            setTimeout(() => {
+                makeAIMove();
+            }, 100);
+        }
     }
 });
 
@@ -1297,9 +1325,13 @@ document.getElementById('restart-btn').addEventListener('click', function() {
         boardElement.classList.remove('ai-turn');
     }
     
-    // If AI is first player, make move
+    // Update visualizations after reset (resetBoard already does this, but ensure it's done)
+    // and then make AI move if needed
     if (gameMode[currentPlayer] === 'AI' && !gameOver) {
-        makeAIMove();
+        // Small delay to ensure visualizations render before AI starts thinking
+        setTimeout(() => {
+            makeAIMove();
+        }, 100);
     }
 });
 
@@ -1428,6 +1460,11 @@ function setEvalMode(mode) {
     // Update dropdown value
     document.getElementById('eval-mode-select').value = mode;
     
+    // Clear cache when switching modes to ensure fresh computation
+    if (mode === 'nn-mcts' || mode === 'nn') {
+        clearMCTSCache();
+    }
+    
     // Update evaluation display
     updateEvaluation();
 }
@@ -1437,6 +1474,11 @@ function setPolicyMode(mode) {
     
     // Update dropdown value
     document.getElementById('policy-mode-select').value = mode;
+    
+    // Clear cache when switching to MCTS-based modes
+    if (mode === 'nn-mcts' || mode === 'nn') {
+        clearMCTSCache();
+    }
     
     // Update policy visualization
     if (mode === 'off') {
@@ -1626,7 +1668,8 @@ async function updateEvaluation() {
         
         if (evalMode === 'heuristic') {
             // Use traditional heuristic evaluation
-            await getAIBestMove(boardElement, currentPlayer);
+            // getAIBestMove is synchronous (calls C++ WASM) and sets computer_eval
+            getAIBestMove(boardElement, currentPlayer);
             // computer_eval is set by getAIBestMove (from current player's perspective)
             evalValue = computer_eval;
             // Convert to attacker's perspective if needed
