@@ -96,12 +96,17 @@ class MCTSNode {
     }
     
     /**
-     * Select best child using PUCT algorithm
+     * Select best child using PUCT algorithm with FPU (First Play Urgency)
      * PUCT = Q(s,a) + c_puct * P(s,a) * sqrt(N(s)) / (1 + N(s,a))
+     * 
+     * For unvisited nodes, uses relative FPU:
+     * Q_unvisited = -(parent.meanValue - fpuReduction)
+     * 
      * @param {number} cPuct - exploration constant
+     * @param {number} fpuReduction - FPU reduction relative to parent value
      * @returns {Object} {moveKey, child}
      */
-    selectChild(cPuct = 1.4) {
+    selectChild(cPuct = 1.4, fpuReduction = 0.5) {
         let bestScore = -Infinity;
         let bestMoveKey = null;
         let bestChild = null;
@@ -110,7 +115,15 @@ class MCTSNode {
         
         for (let [moveKey, child] of this.children) {
             // Q value (from child's perspective, so negate for parent)
-            const qValue = child.visitCount > 0 ? -child.meanValue : 0;
+            let qValue;
+            if (child.visitCount > 0) {
+                // Visited: use actual mean value
+                qValue = -child.meanValue;
+            } else {
+                // Unvisited: use FPU (First Play Urgency)
+                // Relative to parent: assume child is slightly worse than parent
+                qValue = -(this.meanValue - fpuReduction);
+            }
             
             // U value (exploration bonus)
             const uValue = cPuct * child.prior * sqrtParentVisits / (1 + child.visitCount);
@@ -186,12 +199,14 @@ class MCTS {
      * @param {MoveEncoder} moveEncoder - move encoder instance
      * @param {number} numSimulations - number of simulations per search
      * @param {number} cPuct - exploration constant
+     * @param {number} fpuReduction - First Play Urgency reduction (relative to parent)
      */
-    constructor(network, moveEncoder, numSimulations = 100, cPuct = 1.4) {
+    constructor(network, moveEncoder, numSimulations = 100, cPuct = 1.2, fpuReduction = 0.5) {
         this.network = network;
         this.moveEncoder = moveEncoder;
         this.numSimulations = numSimulations;
         this.cPuct = cPuct;
+        this.fpuReduction = fpuReduction;
         this.root = null;
         this.lastRawPolicy = null; // Store last raw policy output for visualization
     }
@@ -225,6 +240,7 @@ class MCTS {
         }
         
         console.log(`[MCTS] Starting search for ${player} with ${this.numSimulations} simulations`);
+        console.log(`[MCTS] Search parameters: c_puct=${this.cPuct}, fpuReduction=${this.fpuReduction}`);
         const startTime = performance.now();
         
         // Create root node with current game state
@@ -293,7 +309,7 @@ class MCTS {
         
         // Selection: traverse tree until leaf
         while (!node.isLeaf() && !node.isTerminal) {
-            const { moveKey, child } = node.selectChild(this.cPuct);
+            const { moveKey, child } = node.selectChild(this.cPuct, this.fpuReduction);
             
             // Lazy initialization: apply move to board clone if child state not yet computed
             if (child.gameState === null) {

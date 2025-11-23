@@ -1151,6 +1151,44 @@ document.getElementById('temperature-slider').addEventListener('input', function
     }
 });
 
+// FPU Reduction slider
+document.getElementById('fpu-reduction-slider').addEventListener('input', function() {
+    mctsFpuReduction = parseFloat(this.value);
+    window.mctsFpuReduction = mctsFpuReduction;
+    document.getElementById('fpu-reduction-value').textContent = mctsFpuReduction.toFixed(2);
+    console.log(`[Settings] FPU reduction set to ${mctsFpuReduction}`);
+    
+    // Clear cache when FPU changes (affects tree search behavior)
+    clearMCTSCache();
+    
+    // Update visualizations if they're active
+    if (policyMode !== 'off') {
+        updatePolicyVisualization();
+    }
+    if (evalMode !== 'off') {
+        updateEvaluation();
+    }
+});
+
+// C_puct slider
+document.getElementById('cpuct-slider').addEventListener('input', function() {
+    mctsCPuct = parseFloat(this.value);
+    window.mctsCPuct = mctsCPuct;
+    document.getElementById('cpuct-value').textContent = mctsCPuct.toFixed(2);
+    console.log(`[Settings] C_puct set to ${mctsCPuct}`);
+    
+    // Clear cache when c_puct changes (affects exploration/exploitation balance)
+    clearMCTSCache();
+    
+    // Update visualizations if they're active
+    if (policyMode !== 'off') {
+        updatePolicyVisualization();
+    }
+    if (evalMode !== 'off') {
+        updateEvaluation();
+    }
+});
+
 // Model selector - populate with available ONNX models
 async function populateModelSelector() {
     const modelSelect = document.getElementById('model-select');
@@ -1385,11 +1423,20 @@ let evalMode = 'nn-mcts'; // 'off', 'heuristic', 'nn', 'nn-mcts'
 let policyMode = 'off'; // 'off', 'heuristic', 'nn', 'nn-mcts'
 let mctsTemperature = 0.4; // Temperature for MCTS move selection
 let mctsSimulationCount = 200; // Simulation count for eval bar and move suggestions
+let mctsFpuReduction = 0.5; // FPU reduction for unvisited nodes (relative to parent)
+let mctsCPuct = 1.2; // Exploration constant for PUCT formula (balance exploration vs exploitation)
+
+// Make MCTS parameters accessible globally for mctsAgent.js
+window.mctsFpuReduction = mctsFpuReduction;
+window.mctsCPuct = mctsCPuct;
 
 // MCTS cache - stores results per position to avoid re-computation
 let mctsCache = {
     boardHash: null,  // Hash of board position
     player: null,     // Player who's turn it is
+    simulations: null, // Number of MCTS simulations
+    cPuct: null,      // C_puct exploration constant
+    fpuReduction: null, // FPU reduction parameter
     mctsResult: null, // Full MCTS result {move, policyData: {policy, visitCounts}, value}
     nnPolicy: null,   // Raw NN policy {policy, value}
     nnValue: null,    // Just the NN value output
@@ -1411,6 +1458,9 @@ function getBoardHash(boardElement, player) {
 function clearMCTSCache() {
     mctsCache.boardHash = null;
     mctsCache.player = null;
+    mctsCache.simulations = null;
+    mctsCache.cPuct = null;
+    mctsCache.fpuReduction = null;
     mctsCache.mctsResult = null;
     mctsCache.nnPolicy = null;
     mctsCache.nnValue = null;
@@ -1520,35 +1570,48 @@ function setPolicyMode(mode) {
  */
 async function getMCTSResult() {
     const hash = getBoardHash(boardElement, currentPlayer);
+    const simCount = mctsSimulationCount;  // Use global setting
+    const currentCPuct = mctsCPuct;
+    const currentFpuReduction = mctsFpuReduction;
     
-    // Check cache
-    if (mctsCache.boardHash === hash && mctsCache.player === currentPlayer && mctsCache.mctsResult) {
+    // Check cache (must match position AND parameters)
+    if (mctsCache.boardHash === hash && 
+        mctsCache.player === currentPlayer && 
+        mctsCache.simulations === simCount &&
+        mctsCache.cPuct === currentCPuct &&
+        mctsCache.fpuReduction === currentFpuReduction &&
+        mctsCache.mctsResult) {
         console.log("[MCTS Cache] Using cached MCTS result");
         return mctsCache.mctsResult;
     }
     
-    // Check if a search is already in progress for this position
-    if (mctsCache.inProgress && mctsCache.boardHash === hash && mctsCache.player === currentPlayer) {
+    // Check if a search is already in progress for this exact configuration
+    if (mctsCache.inProgress && 
+        mctsCache.boardHash === hash && 
+        mctsCache.player === currentPlayer &&
+        mctsCache.simulations === simCount &&
+        mctsCache.cPuct === currentCPuct &&
+        mctsCache.fpuReduction === currentFpuReduction) {
         console.log("[MCTS Cache] Waiting for in-progress MCTS search to complete");
         return await mctsCache.inProgress;
     }
     
-    // Compute new MCTS result with configurable simulation count for move suggestions
-    const simCount = mctsSimulationCount;  // Use global setting
-    
-    console.log("[MCTS Cache] Computing new MCTS result with", simCount, "simulations");
+    console.log("[MCTS Cache] Computing new MCTS result with", simCount, "simulations (c_puct=", currentCPuct, "fpu=", currentFpuReduction, ")");
     
     // Create promise for this search and store it to prevent duplicate searches
     const searchPromise = (async () => {
         const result = await window.mctsAgent.getBestMove(boardElement, currentPlayer, simCount);
         
-        // Cache it, including the root value
+        // Cache it, including the root value and parameters
         if (result && window.mctsAgent.mcts.root) {
             result.rootValue = window.mctsAgent.mcts.root.meanValue;
             result.rootVisits = window.mctsAgent.mcts.root.visitCount;
             
             mctsCache.boardHash = hash;
             mctsCache.player = currentPlayer;
+            mctsCache.simulations = simCount;
+            mctsCache.cPuct = currentCPuct;
+            mctsCache.fpuReduction = currentFpuReduction;
             mctsCache.mctsResult = result;
         }
         
@@ -1558,9 +1621,12 @@ async function getMCTSResult() {
         return result;
     })();
     
-    // Store the promise so other callers can wait for it
+    // Store the promise AND parameters so other callers can wait for it
     mctsCache.boardHash = hash;
     mctsCache.player = currentPlayer;
+    mctsCache.simulations = simCount;
+    mctsCache.cPuct = currentCPuct;
+    mctsCache.fpuReduction = currentFpuReduction;
     mctsCache.inProgress = searchPromise;
     
     return await searchPromise;

@@ -105,7 +105,9 @@ class MCTSAgent {
      */
     createMCTS(numSimulations) {
         console.log(`[MCTSAgent] Creating MCTS with ${numSimulations} simulations`);
-        this.mcts = new MCTS(this.session, this.moveEncoder, numSimulations, 1.4);
+        const fpuReduction = window.mctsFpuReduction !== undefined ? window.mctsFpuReduction : 0.5;
+        const cPuct = window.mctsCPuct !== undefined ? window.mctsCPuct : 1.2;
+        this.mcts = new MCTS(this.session, this.moveEncoder, numSimulations, cPuct, fpuReduction);
     }
     
     /**
@@ -162,9 +164,26 @@ class MCTSAgent {
         
         console.log(`[MCTSAgent] getBestMove called for ${player}, temperature=${temperature}`);
         
-        // Update simulation count if provided
-        if (numSimulations !== null && numSimulations !== this.mcts.numSimulations) {
-            this.createMCTS(numSimulations);
+        // Get current parameter values
+        const currentCPuct = window.mctsCPuct !== undefined ? window.mctsCPuct : 1.2;
+        const currentFpuReduction = window.mctsFpuReduction !== undefined ? window.mctsFpuReduction : 0.5;
+        const currentSimulations = numSimulations || this.mcts.numSimulations;
+        
+        console.log(`[MCTSAgent] Current params: sims=${currentSimulations}, c_puct=${currentCPuct}, fpu=${currentFpuReduction}`);
+        console.log(`[MCTSAgent] MCTS has: sims=${this.mcts.numSimulations}, c_puct=${this.mcts.cPuct}, fpu=${this.mcts.fpuReduction}`);
+        
+        // Recreate MCTS if any parameters changed
+        const needsRecreate = (
+            currentSimulations !== this.mcts.numSimulations ||
+            currentCPuct !== this.mcts.cPuct ||
+            currentFpuReduction !== this.mcts.fpuReduction
+        );
+        
+        console.log(`[MCTSAgent] needsRecreate=${needsRecreate}`);
+        
+        if (needsRecreate) {
+            console.log(`[MCTSAgent] Recreating MCTS: sims ${this.mcts.numSimulations}->${currentSimulations}, c_puct ${this.mcts.cPuct}->${currentCPuct}, fpu ${this.mcts.fpuReduction}->${currentFpuReduction}`);
+            this.createMCTS(currentSimulations);
         }
         
         try {

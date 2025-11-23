@@ -86,6 +86,24 @@
                                 Number of simulations for evaluation bar and move suggestions. Higher = more accurate but slower. Does not affect AI player difficulty.
                             </div>
                         </div>
+                        <div style="margin-bottom: 1.5vh;">
+                            <label for="fpu-reduction-slider" style="display: block; margin-bottom: 0.5vh;">
+                                FPU Reduction: <span id="fpu-reduction-value">0.50</span>
+                            </label>
+                            <input type="range" id="fpu-reduction-slider" min="0" max="2" step="0.05" value="0.5" style="width: 100%; cursor: pointer;">
+                            <div style="font-size: 1.6vh; color: #888; margin-top: 0.5vh;">
+                                First Play Urgency reduction (relative to parent). Controls how optimistic/pessimistic MCTS is about unvisited nodes. Lower values (0-0.3) = more optimistic exploration. Higher values (0.7-1.5) = more cautious. Default 0.5 balances exploration and exploitation.
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 1.5vh;">
+                            <label for="cpuct-slider" style="display: block; margin-bottom: 0.5vh;">
+                                C_puct (Exploration): <span id="cpuct-value">1.20</span>
+                            </label>
+                            <input type="range" id="cpuct-slider" min="0.5" max="3" step="0.1" value="1.2" style="width: 100%; cursor: pointer;">
+                            <div style="font-size: 1.6vh; color: #888; margin-top: 0.5vh;">
+                                Exploration constant for PUCT formula. Controls exploration vs exploitation trade-off. Lower values (0.5-1.0) = more exploitation of known good moves. Higher values (1.5-3.0) = more exploration of uncertain moves. Default 1.2 provides balanced search.
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
