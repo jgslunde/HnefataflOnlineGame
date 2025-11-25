@@ -786,7 +786,14 @@ function makeAIMove() {
                 return;
             }
             console.log("[Script] Making MCTS move...");
+            
+            // Show AI thinking indicator next to player label
+            setAIThinking(true);
+            
             const move = await getMCTSBestMove(boardElement, currentPlayer);
+            
+            // Clear AI thinking indicator
+            setAIThinking(false);
             // Check once more after async operation
             if (gameOver) {
                 console.log("[Script] Game over after MCTS calculation, canceling move");
@@ -807,7 +814,14 @@ function makeAIMove() {
             return;
         }
         console.log("[Script] Making tree-search move...");
+        
+        // Show AI thinking indicator (won't animate due to blocking)
+        setAIThinking(true);
+        
         const move = getAIBestMove(boardElement, currentPlayer);
+        
+        // Clear AI thinking indicator
+        setAIThinking(false);
         if (gameOver) {
             console.log("[Script] Game over after tree-search calculation, canceling move");
             return;
@@ -1782,6 +1796,70 @@ async function updatePolicyVisualization() {
 /**
  * Update AI evaluation display
  */
+let evalLoadingInterval = null;
+let aiThinkingInterval = null;
+
+function setEvalLoading(isLoading) {
+    const evalValueSpan = document.getElementById('eval-value');
+    
+    if (isLoading) {
+        // Clear any existing interval
+        if (evalLoadingInterval) {
+            clearInterval(evalLoadingInterval);
+        }
+        
+        // Animate dots: . .. ... . .. ...
+        let dotCount = 0;
+        evalValueSpan.textContent = '.';
+        
+        evalLoadingInterval = setInterval(() => {
+            dotCount = (dotCount + 1) % 4;
+            evalValueSpan.textContent = '.'.repeat(dotCount === 0 ? 1 : dotCount);
+        }, 400);
+    } else {
+        // Stop animation
+        if (evalLoadingInterval) {
+            clearInterval(evalLoadingInterval);
+            evalLoadingInterval = null;
+        }
+        // Update evaluation will be called to show the actual value
+    }
+}
+
+function setAIThinking(isThinking) {
+    const label = currentPlayer === 'attacker' 
+        ? document.getElementById('attacker-label')
+        : document.getElementById('defender-label');
+    
+    if (isThinking) {
+        // Clear any existing interval
+        if (aiThinkingInterval) {
+            clearInterval(aiThinkingInterval);
+        }
+        
+        // Get the base text (e.g., "Attacker:<br>AI" or "Defender:<br>AI")
+        const baseText = currentPlayer === 'attacker' ? 'Attacker:<br>AI' : 'Defender:<br>AI';
+        
+        // Animate dots: AI. AI.. AI... AI. AI.. AI...
+        let dotCount = 1;
+        label.innerHTML = baseText + '.';
+        
+        aiThinkingInterval = setInterval(() => {
+            dotCount = (dotCount % 3) + 1;
+            label.innerHTML = baseText + '.'.repeat(dotCount);
+        }, 400);
+    } else {
+        // Stop animation
+        if (aiThinkingInterval) {
+            clearInterval(aiThinkingInterval);
+            aiThinkingInterval = null;
+        }
+        // Restore base text
+        const baseText = currentPlayer === 'attacker' ? 'Attacker:<br>AI' : 'Defender:<br>AI';
+        label.innerHTML = baseText;
+    }
+}
+
 async function updateEvaluation() {
     if (evalMode === 'off') {
         document.getElementById('AI-eval').classList.add('hidden');
@@ -1838,7 +1916,11 @@ async function updateEvaluation() {
             if (!window.mctsAgent || !window.mctsAgent.isReady) {
                 return;
             }
+            
+            // Show loading indicator while computing MCTS evaluation
+            setEvalLoading(true);
             const mctsResult = await getMCTSResult();
+            setEvalLoading(false);
             if (mctsResult && mctsResult.rootValue !== undefined) {
                 // Get value from the cached root value
                 evalValue = mctsResult.rootValue;
