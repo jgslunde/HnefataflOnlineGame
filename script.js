@@ -448,6 +448,10 @@ function getAIDifficulty(player = null) {
 function getAIBestMove(boardElement, player_str) {
     const difficulty = getAIDifficulty();
     let max_depth = 4;
+    if(difficulty == "trivial")
+        max_depth = 1
+    if(difficulty == "veryeasy")
+        max_depth = 2
     if(difficulty == "easy")
         max_depth = 3
     if(difficulty == "medium")
@@ -455,6 +459,8 @@ function getAIBestMove(boardElement, player_str) {
     if(difficulty == "hard")
         max_depth = 5
     if(difficulty == "veryhard")
+        max_depth = 6
+    if(difficulty == "extreme")
         max_depth = 6
 
     let player = player_str === 'attacker'? 1 : -1;
@@ -508,7 +514,7 @@ async function getMCTSBestMove(boardElement, player_str) {
     const difficulty = getAIDifficulty();
     
     // Map difficulty to simulation count
-    const simCount = { easy: 100, medium: 200, hard: 400, veryhard: 800 }[difficulty] || 100;
+    const simCount = { trivial: 50, veryeasy: 100, easy: 175, medium: 250, hard: 400, veryhard: 750, extreme: 1000}[difficulty] || 100;
     
     console.log(`[Script] MCTS difficulty: ${difficulty}, simulations: ${simCount}, temperature: ${mctsTemperature}`);
     
@@ -1435,10 +1441,10 @@ const boardElement = document.getElementById('board');
 // AI Evaluation and Policy visualization state
 let evalMode = 'nn-mcts'; // 'off', 'heuristic', 'nn', 'nn-mcts'
 let policyMode = 'off'; // 'off', 'heuristic', 'nn', 'nn-mcts'
-let mctsTemperature = 0.4; // Temperature for MCTS move selection
+let mctsTemperature = 0.5; // Temperature for MCTS move selection
 let mctsSimulationCount = 200; // Simulation count for eval bar and move suggestions
 let mctsFpuReduction = 0.5; // FPU reduction for unvisited nodes (relative to parent)
-let mctsCPuct = 1.2; // Exploration constant for PUCT formula (balance exploration vs exploitation)
+let mctsCPuct = 1.0; // Exploration constant for PUCT formula (balance exploration vs exploitation)
 
 // Make MCTS parameters accessible globally for mctsAgent.js
 window.mctsFpuReduction = mctsFpuReduction;
