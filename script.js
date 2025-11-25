@@ -508,7 +508,7 @@ async function getMCTSBestMove(boardElement, player_str) {
     const difficulty = getAIDifficulty();
     
     // Map difficulty to simulation count
-    const simCount = { easy: 50, medium: 100, hard: 200, veryhard: 400 }[difficulty] || 100;
+    const simCount = { easy: 100, medium: 200, hard: 400, veryhard: 800 }[difficulty] || 100;
     
     console.log(`[Script] MCTS difficulty: ${difficulty}, simulations: ${simCount}, temperature: ${mctsTemperature}`);
     
@@ -1195,7 +1195,7 @@ async function populateModelSelector() {
     
     // List of known models (fallback)
     let knownModels = [
-        'heckpoint_SE_iter_49.onnx',
+        'checkpoint_SE_iter_49.onnx',
     ];
     
     try {
@@ -1261,7 +1261,7 @@ async function populateModelSelector() {
         // Select current model
         if (window.mctsAgent && window.mctsAgent.currentModelPath === fullPath) {
             option.selected = true;
-        } else if (fullPath.includes('heckpoint_SE_iter_49.onnx')) {
+        } else if (fullPath.includes('checkpoint_SE_iter_49.onnx')) {
             option.selected = true; // Default selection
         }
         
