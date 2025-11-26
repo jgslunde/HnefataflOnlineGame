@@ -243,9 +243,21 @@ class MCTS {
         console.log(`[MCTS] Search parameters: c_puct=${this.cPuct}, fpuReduction=${this.fpuReduction}`);
         const startTime = performance.now();
         
-        // Create root node with current game state
+        // Capture current game state
         const rootState = this.captureGameState(boardElement, player);
-        this.root = new MCTSNode(rootState, player);
+        
+        // Check if we can reuse the existing root
+        // This is important for continuous eval - don't destroy the tree between searches
+        const canReuseRoot = this.root && 
+                            this.root.player === player && 
+                            this.statesEqual(this.root.gameState, rootState);
+        
+        if (canReuseRoot) {
+            console.log(`[MCTS] Reusing existing root (${this.root.visitCount} visits)`);
+        } else {
+            console.log(`[MCTS] Creating new root node`);
+            this.root = new MCTSNode(rootState, player);
+        }
         
         // Check if game is already over
         const gameOver = this.checkGameOver(boardElement);
@@ -622,6 +634,27 @@ class MCTS {
                 }
             }
         }
+    }
+    
+    /**
+     * Check if two game states are equal
+     * @param {Object} state1 
+     * @param {Object} state2 
+     * @returns {boolean}
+     */
+    statesEqual(state1, state2) {
+        if (!state1 || !state2) return false;
+        if (state1.player !== state2.player) return false;
+        
+        for (let r = 0; r < 7; r++) {
+            for (let c = 0; c < 7; c++) {
+                if (state1.board[r][c] !== state2.board[r][c]) {
+                    return false;
+                }
+            }
+        }
+        
+        return true;
     }
     
     /**
