@@ -104,6 +104,15 @@
                                 Exploration constant for PUCT formula. Controls exploration vs exploitation trade-off. Lower values (0.5-1.0) = more exploitation of known good moves. Higher values (1.5-3.0) = more exploration of uncertain moves. Default 1.2 provides balanced search.
                             </div>
                         </div>
+                        <div style="margin-bottom: 1.5vh;">
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="checkbox" id="continuous-eval-toggle" style="margin-right: 1vh; cursor: pointer;">
+                                <span>Continuous Eval/Suggestions Update</span>
+                            </label>
+                            <div style="font-size: 1.6vh; color: #888; margin-top: 0.5vh;">
+                                Continuously run MCTS and update eval bar and move suggestions every 100 simulations. Ignores the simulation count parameter and keeps improving until position changes.
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -128,16 +137,21 @@
                 <option value="mcts">AI: NN + MCTS</option>
                 <option value="tree-search">AI: Minimax</option>
             </select>
-            <div id="attacker-difficulty-container" class="hidden" style="margin-top: 5px;">
-                <select id="attacker-difficulty">
-                    <option value="trivial">Trivial</option>
-                    <option value="veryeasy">Very Easy</option>
-                    <option value="easy">Easy</option>
-                    <option value="medium" selected>Medium</option>
-                    <option value="hard">Hard</option>
-                    <option value="veryhard">Very Hard</option>
-                    <option value="extreme">Extreme</option>
-                </select>
+            <div id="attacker-mcts-difficulty-container" class="hidden" style="margin-top: 5px;">
+                <label for="attacker-mcts-difficulty" style="font-size: 1.6vh; display: block; margin-bottom: 3px;">Simulations: <span id="attacker-mcts-value">200</span></label>
+                <input type="range" id="attacker-mcts-difficulty" min="10" max="1000" step="10" value="200" style="width: 100%;">
+                <div style="display: flex; justify-content: space-between; font-size: 1.4vh; margin-top: 2px;">
+                    <span>Easy</span>
+                    <span>Hard</span>
+                </div>
+            </div>
+            <div id="attacker-minimax-difficulty-container" class="hidden" style="margin-top: 5px;">
+                <label for="attacker-minimax-difficulty" style="font-size: 1.6vh; display: block; margin-bottom: 3px;">Depth: <span id="attacker-minimax-value">4</span></label>
+                <input type="range" id="attacker-minimax-difficulty" min="1" max="7" step="1" value="4" style="width: 100%;">
+                <div style="display: flex; justify-content: space-between; font-size: 1.4vh; margin-top: 2px;">
+                    <span>Easy</span>
+                    <span>Hard</span>
+                </div>
             </div>
         </div>
 
@@ -154,13 +168,21 @@
                 <option value="mcts">AI: NN + MCTS</option>
                 <option value="tree-search">AI: Minimax</option>
             </select>
-            <div id="defender-difficulty-container" class="hidden" style="margin-top: 5px;">
-                <select id="defender-difficulty">
-                    <option value="easy">Easy</option>
-                    <option value="medium" selected>Medium</option>
-                    <option value="hard">Hard</option>
-                    <option value="veryhard">Very Hard</option>
-                </select>
+            <div id="defender-mcts-difficulty-container" class="hidden" style="margin-top: 5px;">
+                <label for="defender-mcts-difficulty" style="font-size: 1.6vh; display: block; margin-bottom: 3px;">Simulations: <span id="defender-mcts-value">200</span></label>
+                <input type="range" id="defender-mcts-difficulty" min="10" max="1000" step="10" value="200" style="width: 100%;">
+                <div style="display: flex; justify-content: space-between; font-size: 1.4vh; margin-top: 2px;">
+                    <span>Easy</span>
+                    <span>Hard</span>
+                </div>
+            </div>
+            <div id="defender-minimax-difficulty-container" class="hidden" style="margin-top: 5px;">
+                <label for="defender-minimax-difficulty" style="font-size: 1.6vh; display: block; margin-bottom: 3px;">Depth: <span id="defender-minimax-value">4</span></label>
+                <input type="range" id="defender-minimax-difficulty" min="1" max="7" step="1" value="4" style="width: 100%;">
+                <div style="display: flex; justify-content: space-between; font-size: 1.4vh; margin-top: 2px;">
+                    <span>Easy</span>
+                    <span>Hard</span>
+                </div>
             </div>
         </div>
 

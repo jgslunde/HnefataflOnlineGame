@@ -364,26 +364,40 @@ const aiTypeRadioButtons = document.querySelectorAll('input[name="ai-type"]');
 // Player configuration dropdowns
 const attackerTypeSelect = document.getElementById('attacker-type');
 const defenderTypeSelect = document.getElementById('defender-type');
-const attackerDifficultyContainer = document.getElementById('attacker-difficulty-container');
-const defenderDifficultyContainer = document.getElementById('defender-difficulty-container');
-const attackerDifficultySelect = document.getElementById('attacker-difficulty');
-const defenderDifficultySelect = document.getElementById('defender-difficulty');
+const attackerMctsDifficultyContainer = document.getElementById('attacker-mcts-difficulty-container');
+const defenderMctsDifficultyContainer = document.getElementById('defender-mcts-difficulty-container');
+const attackerMinimaxDifficultyContainer = document.getElementById('attacker-minimax-difficulty-container');
+const defenderMinimaxDifficultyContainer = document.getElementById('defender-minimax-difficulty-container');
+const attackerMctsSlider = document.getElementById('attacker-mcts-difficulty');
+const defenderMctsSlider = document.getElementById('defender-mcts-difficulty');
+const attackerMinimaxSlider = document.getElementById('attacker-minimax-difficulty');
+const defenderMinimaxSlider = document.getElementById('defender-minimax-difficulty');
+const attackerMctsValue = document.getElementById('attacker-mcts-value');
+const defenderMctsValue = document.getElementById('defender-mcts-value');
+const attackerMinimaxValue = document.getElementById('attacker-minimax-value');
+const defenderMinimaxValue = document.getElementById('defender-minimax-value');
 
 // Player configuration (stores type and difficulty for each player)
 const playerConfig = {
-    attacker: { type: 'human', difficulty: 'medium' },
-    defender: { type: 'human', difficulty: 'medium' }
+    attacker: { type: 'human', mctsSimulations: 200, minimaxDepth: 4 },
+    defender: { type: 'human', mctsSimulations: 200, minimaxDepth: 4 }
 };
 
-// Show/hide difficulty dropdown based on player type
+// Show/hide difficulty sliders based on player type
 function updateDifficultyVisibility(player) {
-    const container = player === 'attacker' ? attackerDifficultyContainer : defenderDifficultyContainer;
+    const mctsContainer = player === 'attacker' ? attackerMctsDifficultyContainer : defenderMctsDifficultyContainer;
+    const minimaxContainer = player === 'attacker' ? attackerMinimaxDifficultyContainer : defenderMinimaxDifficultyContainer;
     const type = playerConfig[player].type;
     
     if (type === 'human') {
-        container.classList.add('hidden');
-    } else {
-        container.classList.remove('hidden');
+        mctsContainer.classList.add('hidden');
+        minimaxContainer.classList.add('hidden');
+    } else if (type === 'mcts') {
+        mctsContainer.classList.remove('hidden');
+        minimaxContainer.classList.add('hidden');
+    } else if (type === 'tree-search') {
+        mctsContainer.classList.add('hidden');
+        minimaxContainer.classList.remove('hidden');
     }
 }
 
@@ -401,14 +415,28 @@ defenderTypeSelect.addEventListener('change', function() {
     updateGameMode();
 });
 
-// Handle attacker difficulty change
-attackerDifficultySelect.addEventListener('change', function() {
-    playerConfig.attacker.difficulty = this.value;
+// Handle attacker MCTS slider change
+attackerMctsSlider.addEventListener('input', function() {
+    playerConfig.attacker.mctsSimulations = parseInt(this.value);
+    attackerMctsValue.textContent = this.value;
 });
 
-// Handle defender difficulty change
-defenderDifficultySelect.addEventListener('change', function() {
-    playerConfig.defender.difficulty = this.value;
+// Handle defender MCTS slider change
+defenderMctsSlider.addEventListener('input', function() {
+    playerConfig.defender.mctsSimulations = parseInt(this.value);
+    defenderMctsValue.textContent = this.value;
+});
+
+// Handle attacker Minimax slider change
+attackerMinimaxSlider.addEventListener('input', function() {
+    playerConfig.attacker.minimaxDepth = parseInt(this.value);
+    attackerMinimaxValue.textContent = this.value;
+});
+
+// Handle defender Minimax slider change
+defenderMinimaxSlider.addEventListener('input', function() {
+    playerConfig.defender.minimaxDepth = parseInt(this.value);
+    defenderMinimaxValue.textContent = this.value;
 });
 
 // Update game mode based on current selections
@@ -437,31 +465,21 @@ function getAIType(player = null) {
 }
 
 function getAIDifficulty(player = null) {
-    // If player is specified, get their specific difficulty
-    if (player) {
-        return playerConfig[player].difficulty;
+    // This function now returns the appropriate difficulty based on AI type
+    const targetPlayer = player || currentPlayer;
+    const aiType = playerConfig[targetPlayer].type;
+    
+    if (aiType === 'mcts') {
+        return playerConfig[targetPlayer].mctsSimulations;
+    } else if (aiType === 'tree-search') {
+        return playerConfig[targetPlayer].minimaxDepth;
     }
-    // Otherwise, get current player's difficulty
-    return playerConfig[currentPlayer].difficulty;
+    return 200; // Default fallback
 }
 
 function getAIBestMove(boardElement, player_str) {
-    const difficulty = getAIDifficulty();
-    let max_depth = 4;
-    if(difficulty == "trivial")
-        max_depth = 1
-    if(difficulty == "veryeasy")
-        max_depth = 2
-    if(difficulty == "easy")
-        max_depth = 3
-    if(difficulty == "medium")
-        max_depth = 4
-    if(difficulty == "hard")
-        max_depth = 5
-    if(difficulty == "veryhard")
-        max_depth = 6
-    if(difficulty == "extreme")
-        max_depth = 6
+    // For tree-search AI, difficulty is the depth directly
+    const max_depth = getAIDifficulty();
 
     let player = player_str === 'attacker'? 1 : -1;
     let board_arr = [];
@@ -511,12 +529,10 @@ function getAIBestMove(boardElement, player_str) {
 async function getMCTSBestMove(boardElement, player_str) {
     console.log(`[Script] getMCTSBestMove called for ${player_str}`);
     
-    const difficulty = getAIDifficulty();
+    // For MCTS AI, difficulty is the simulation count directly
+    const simCount = getAIDifficulty();
     
-    // Map difficulty to simulation count
-    const simCount = { trivial: 50, veryeasy: 100, easy: 175, medium: 250, hard: 400, veryhard: 750, extreme: 1000}[difficulty] || 100;
-    
-    console.log(`[Script] MCTS difficulty: ${difficulty}, simulations: ${simCount}, temperature: ${mctsTemperature}`);
+    console.log(`[Script] MCTS simulations: ${simCount}, temperature: ${mctsTemperature}`);
     
     const agent = getMCTSAgent();
     
@@ -1209,13 +1225,27 @@ document.getElementById('cpuct-slider').addEventListener('input', function() {
     }
 });
 
+// Continuous eval toggle
+document.getElementById('continuous-eval-toggle').addEventListener('change', function() {
+    continuousEvalEnabled = this.checked;
+    console.log(`[Settings] Continuous eval ${continuousEvalEnabled ? 'enabled' : 'disabled'}`);
+    
+    if (continuousEvalEnabled) {
+        // Start continuous evaluation
+        startContinuousEval();
+    } else {
+        // Stop continuous evaluation
+        stopContinuousEval();
+    }
+});
+
 // Model selector - populate with available ONNX models
 async function populateModelSelector() {
     const modelSelect = document.getElementById('model-select');
     
     // List of known models (fallback)
     let knownModels = [
-        'checkpoint_SE_iter_49.onnx',
+        'checkpoint_SE_iter_77.onnx',
     ];
     
     try {
@@ -1281,7 +1311,7 @@ async function populateModelSelector() {
         // Select current model
         if (window.mctsAgent && window.mctsAgent.currentModelPath === fullPath) {
             option.selected = true;
-        } else if (fullPath.includes('checkpoint_SE_iter_49.onnx')) {
+        } else if (fullPath.includes('checkpoint_SE_iter_77.onnx')) {
             option.selected = true; // Default selection
         }
         
@@ -1445,6 +1475,9 @@ let mctsTemperature = 0.5; // Temperature for MCTS move selection
 let mctsSimulationCount = 200; // Simulation count for eval bar and move suggestions
 let mctsFpuReduction = 0.5; // FPU reduction for unvisited nodes (relative to parent)
 let mctsCPuct = 1.0; // Exploration constant for PUCT formula (balance exploration vs exploitation)
+let continuousEvalEnabled = false; // Whether to continuously update eval/suggestions
+let continuousEvalRunning = false; // Track if continuous eval is currently running
+let continuousEvalAbortController = null; // AbortController to stop continuous eval
 
 // Make MCTS parameters accessible globally for mctsAgent.js
 window.mctsFpuReduction = mctsFpuReduction;
@@ -1485,6 +1518,18 @@ function clearMCTSCache() {
     mctsCache.nnPolicy = null;
     mctsCache.nnValue = null;
     mctsCache.inProgress = null;
+    
+    // Stop and restart continuous eval when position changes
+    if (continuousEvalEnabled) {
+        stopContinuousEval();
+        // Use a longer delay to ensure the async loop has fully stopped
+        setTimeout(() => {
+            if (continuousEvalEnabled && !gameOver && (evalMode !== 'off' || policyMode !== 'off')) {
+                console.log("[Clear Cache] Restarting continuous eval after position change");
+                startContinuousEval();
+            }
+        }, 200);
+    }
 }
 
 // Initialize MCTS agent on page load
@@ -1563,6 +1608,14 @@ function setEvalMode(mode) {
         clearMCTSCache();
     }
     
+    // Restart continuous eval if enabled
+    if (continuousEvalEnabled) {
+        stopContinuousEval();
+        if (mode !== 'off' || policyMode !== 'off') {
+            startContinuousEval();
+        }
+    }
+    
     // Update evaluation display
     updateEvaluation();
 }
@@ -1576,6 +1629,14 @@ function setPolicyMode(mode) {
     // Don't clear cache when switching policy modes - reuse evaluation's MCTS result!
     // Only clear cache for actual board changes (moves, undo, etc.)
     
+    // Restart continuous eval if enabled
+    if (continuousEvalEnabled) {
+        stopContinuousEval();
+        if (mode !== 'off' || evalMode !== 'off') {
+            startContinuousEval();
+        }
+    }
+    
     // Update policy visualization
     if (mode === 'off') {
         clearPolicyVisualization();
@@ -1585,10 +1646,161 @@ function setPolicyMode(mode) {
 }
 
 /**
+ * Start continuous MCTS evaluation
+ */
+async function startContinuousEval() {
+    // Don't start if already running - let it finish first
+    if (continuousEvalRunning) {
+        console.log("[Continuous Eval] Already running, skipping start");
+        return;
+    }
+    
+    if (gameOver) {
+        console.log("[Continuous Eval] Game is over, not starting");
+        return;
+    }
+    
+    if (!window.mctsAgent || !window.mctsAgent.isReady) {
+        console.log("[Continuous Eval] MCTS agent not ready");
+        return;
+    }
+    
+    if (evalMode === 'off' && policyMode === 'off') {
+        console.log("[Continuous Eval] Both eval and policy are off, not starting");
+        return;
+    }
+    
+    continuousEvalRunning = true;
+    continuousEvalAbortController = new AbortController();
+    const signal = continuousEvalAbortController.signal;
+    
+    console.log("[Continuous Eval] Starting continuous evaluation");
+    
+    const hash = getBoardHash(boardElement, currentPlayer);
+    let totalSimulations = 0;
+    const batchSize = 100; // Update every 100 simulations
+    
+    // Initialize the MCTS tree if needed
+    const mcts = window.mctsAgent.mcts;
+    if (!mcts.root || mcts.root.visitCount === 0) {
+        console.log("[Continuous Eval] Initializing MCTS tree with first batch");
+        await window.mctsAgent.getBestMove(boardElement, currentPlayer, batchSize);
+        totalSimulations += batchSize;
+    }
+    
+    try {
+        while (continuousEvalRunning && !signal.aborted) {
+            // Check if position changed
+            const currentHash = getBoardHash(boardElement, currentPlayer);
+            if (currentHash !== hash) {
+                console.log("[Continuous Eval] Position changed, restarting");
+                stopContinuousEval();
+                startContinuousEval();
+                return;
+            }
+            
+            // Run batch of simulations on existing tree
+            for (let i = 0; i < batchSize; i++) {
+                await mcts.runSimulation(boardElement);
+            }
+            totalSimulations += batchSize;
+            
+            // Update visualizations
+            if (mcts.root) {
+                const rootValue = mcts.root.meanValue;
+                console.log(`[Continuous Eval] ${totalSimulations} sims, visits: ${mcts.root.visitCount}, value: ${rootValue.toFixed(3)}`);
+                
+                // Update eval display
+                if (evalMode === 'nn-mcts') {
+                    updateEvalDisplay(rootValue);
+                }
+                
+                // Update policy visualization
+                if (policyMode === 'nn-mcts') {
+                    await updatePolicyVisualization();
+                }
+            }
+            
+            // Small delay to keep UI responsive
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
+    } catch (error) {
+        console.error("[Continuous Eval] Error:", error);
+    } finally {
+        continuousEvalRunning = false;
+        console.log("[Continuous Eval] Stopped");
+    }
+}
+
+/**
+ * Stop continuous MCTS evaluation
+ */
+function stopContinuousEval() {
+    console.log("[Continuous Eval] Stopping...");
+    if (continuousEvalAbortController) {
+        continuousEvalAbortController.abort();
+        continuousEvalAbortController = null;
+    }
+    continuousEvalRunning = false;
+}
+
+/**
+ * Update eval display with a value
+ */
+function updateEvalDisplay(rootValue) {
+    let evalValue = rootValue;
+    
+    // Convert to attacker's perspective if needed
+    if (currentPlayer === 'defender') {
+        evalValue = -evalValue;
+    }
+    
+    const evalValueSpan = document.getElementById('eval-value');
+    const evalBar = document.getElementById('eval-bar');
+    
+    // Display the evaluation (always from attacker's perspective)
+    if (evalValue > 5) {
+        evalValueSpan.textContent = 'attacker\nwinning';
+    } else if (evalValue < -5) {
+        evalValueSpan.textContent = 'defender\nwinning';
+    } else {
+        evalValueSpan.textContent = evalValue.toFixed(2);
+    }
+    
+    // Update the visual bar position
+    const clampedValue = Math.max(-1, Math.min(1, evalValue));
+    const barPosition = ((clampedValue + 1) / 2) * 100;
+    evalBar.style.left = `${barPosition}%`;
+}
+
+/**
  * Get or compute MCTS result for current position (with caching)
  * This function handles race conditions when multiple callers request MCTS simultaneously
  */
 async function getMCTSResult() {
+    // If continuous eval is running, use the current tree state
+    if (continuousEvalEnabled && continuousEvalRunning && window.mctsAgent.mcts.root) {
+        const root = window.mctsAgent.mcts.root;
+        
+        // Build visit counts map from current tree
+        const visitCounts = new Map();
+        for (const [moveKey, child] of root.children.entries()) {
+            const [fromRow, fromCol, toRow, toCol] = moveKey.split(',').map(Number);
+            const moveIdx = window.mctsAgent.moveEncoder.encodeMove(fromRow, fromCol, toRow, toCol);
+            visitCounts.set(moveIdx, child.visitCount);
+        }
+        
+        const result = {
+            rootValue: root.meanValue,
+            rootVisits: root.visitCount,
+            policyData: {
+                policy: window.mctsAgent.mcts.lastRawPolicy || new Float32Array(1176),
+                visitCounts: visitCounts
+            }
+        };
+        return result;
+    }
+    
     const hash = getBoardHash(boardElement, currentPlayer);
     const simCount = mctsSimulationCount;  // Use global setting
     const currentCPuct = mctsCPuct;
@@ -1923,20 +2135,29 @@ async function updateEvaluation() {
                 return;
             }
             
-            // Show loading indicator while computing MCTS evaluation
-            setEvalLoading(true);
-            const mctsResult = await getMCTSResult();
-            setEvalLoading(false);
-            if (mctsResult && mctsResult.rootValue !== undefined) {
-                // Get value from the cached root value
-                evalValue = mctsResult.rootValue;
+            // If continuous eval is enabled, just use current root value
+            if (continuousEvalEnabled && continuousEvalRunning && window.mctsAgent.mcts.root) {
+                evalValue = window.mctsAgent.mcts.root.meanValue;
                 // Convert to attacker's perspective if needed
                 if (currentPlayer === 'defender') {
                     evalValue = -evalValue;
                 }
             } else {
-                console.error("[Eval] MCTS result invalid or root value not found");
-                return;
+                // Show loading indicator while computing MCTS evaluation
+                setEvalLoading(true);
+                const mctsResult = await getMCTSResult();
+                setEvalLoading(false);
+                if (mctsResult && mctsResult.rootValue !== undefined) {
+                    // Get value from the cached root value
+                    evalValue = mctsResult.rootValue;
+                    // Convert to attacker's perspective if needed
+                    if (currentPlayer === 'defender') {
+                        evalValue = -evalValue;
+                    }
+                } else {
+                    console.error("[Eval] MCTS result invalid or root value not found");
+                    return;
+                }
             }
         }
         
@@ -2065,11 +2286,22 @@ async function visualizePolicyForPiece(pieceCell, policyData) {
         moveValues.set(key, value);
     }
     
-    // Normalize to get percentages
-    const total = Array.from(moveProbs.values()).reduce((a, b) => a + b, 0);
-    if (total > 0) {
+    // Don't normalize - use global probabilities
+    // Calculate global total for percentage display
+    let globalTotal = 0;
+    if (policyData.source === 'mcts' && policyData.visitCounts) {
+        // Sum all visit counts across all moves
+        for (const count of policyData.visitCounts.values()) {
+            globalTotal += count;
+        }
+    } else {
+        // Sum all policy probabilities
+        globalTotal = policyData.policy.reduce((a, b) => a + b, 0);
+    }
+    
+    if (globalTotal > 0) {
         for (const [key, probValue] of moveProbs.entries()) {
-            const percentage = (probValue / total) * 100;
+            const percentage = (probValue / globalTotal) * 100;
             const value = moveValues.get(key) || 0;
             const [row, col] = key.split(',').map(Number);
             const cell = boardElement.rows[row].cells[col];
