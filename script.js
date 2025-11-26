@@ -1478,6 +1478,7 @@ let mctsCPuct = 1.0; // Exploration constant for PUCT formula (balance explorati
 let continuousEvalEnabled = false; // Whether to continuously update eval/suggestions
 let continuousEvalRunning = false; // Track if continuous eval is currently running
 let continuousEvalAbortController = null; // AbortController to stop continuous eval
+let continuousEvalSessionId = 0; // Unique ID for each continuous eval session
 
 // Make MCTS parameters accessible globally for mctsAgent.js
 window.mctsFpuReduction = mctsFpuReduction;
@@ -1674,7 +1675,10 @@ async function startContinuousEval() {
     continuousEvalAbortController = new AbortController();
     const signal = continuousEvalAbortController.signal;
     
-    console.log("[Continuous Eval] Starting continuous evaluation");
+    // Create unique session ID to detect if we've been replaced
+    const sessionId = ++continuousEvalSessionId;
+    
+    console.log("[Continuous Eval] Starting continuous evaluation (session", sessionId, ")");
     
     const hash = getBoardHash(boardElement, currentPlayer);
     let totalSimulations = 0;
@@ -1689,14 +1693,12 @@ async function startContinuousEval() {
     }
     
     try {
-        while (continuousEvalRunning && !signal.aborted) {
+        while (continuousEvalRunning && !signal.aborted && sessionId === continuousEvalSessionId) {
             // Check if position changed
             const currentHash = getBoardHash(boardElement, currentPlayer);
             if (currentHash !== hash) {
-                console.log("[Continuous Eval] Position changed, restarting");
-                stopContinuousEval();
-                startContinuousEval();
-                return;
+                console.log("[Continuous Eval] Position changed, stopping session", sessionId);
+                break;
             }
             
             // Run batch of simulations on existing tree
@@ -1725,10 +1727,15 @@ async function startContinuousEval() {
             await new Promise(resolve => setTimeout(resolve, 0));
         }
     } catch (error) {
-        console.error("[Continuous Eval] Error:", error);
+        console.error("[Continuous Eval] Error in session", sessionId, ":", error);
     } finally {
-        continuousEvalRunning = false;
-        console.log("[Continuous Eval] Stopped");
+        // Only set continuousEvalRunning to false if we're still the active session
+        if (sessionId === continuousEvalSessionId) {
+            continuousEvalRunning = false;
+            console.log("[Continuous Eval] Stopped session", sessionId);
+        } else {
+            console.log("[Continuous Eval] Session", sessionId, "terminated (replaced by", continuousEvalSessionId, ")");
+        }
     }
 }
 
@@ -1967,35 +1974,57 @@ async function updatePolicyVisualization() {
                 source: 'nn'
             };
         } else if (policyMode === 'nn-mcts') {
-            // Use MCTS visit counts
-            const mctsResult = await getMCTSResult();
-            if (mctsResult && mctsResult.policyData) {
-                // Extract move values from MCTS children
+            // If continuous eval is running, use current tree directly without waiting
+            if (continuousEvalEnabled && continuousEvalRunning && window.mctsAgent.mcts.root) {
+                const root = window.mctsAgent.mcts.root;
+                const visitCounts = new Map();
                 const moveValues = new Map();
-                if (window.mctsAgent && window.mctsAgent.mcts && window.mctsAgent.mcts.root) {
-                    for (const [moveKey, child] of window.mctsAgent.mcts.root.children.entries()) {
-                        moveValues.set(moveKey, child.meanValue);
-                    }
+                
+                for (const [moveKey, child] of root.children.entries()) {
+                    const [fromRow, fromCol, toRow, toCol] = moveKey.split(',').map(Number);
+                    const moveIdx = window.mctsAgent.moveEncoder.encodeMove(fromRow, fromCol, toRow, toCol);
+                    visitCounts.set(moveIdx, child.visitCount);
+                    moveValues.set(moveKey, child.meanValue);
                 }
                 
                 policyData = {
-                    policy: mctsResult.policyData.policy,
-                    visitCounts: mctsResult.policyData.visitCounts,
-                    value: mctsResult.rootValue || 0,
+                    policy: window.mctsAgent.mcts.lastRawPolicy || new Float32Array(1176),
+                    visitCounts: visitCounts,
+                    value: root.meanValue,
                     moveValues: moveValues,
                     source: 'mcts'
                 };
             } else {
-                // Fallback to NN
-                const nnResult = await getNNPolicy();
-                const policyProbs = softmax(nnResult.policy);
-                policyData = {
-                    policy: policyProbs,
-                    visitCounts: null,
-                    value: nnResult.value,
-                    moveValues: null,
-                    source: 'nn'
-                };
+                // Use MCTS via getMCTSResult (will run search if needed)
+                const mctsResult = await getMCTSResult();
+                if (mctsResult && mctsResult.policyData) {
+                    // Extract move values from MCTS children
+                    const moveValues = new Map();
+                    if (window.mctsAgent && window.mctsAgent.mcts && window.mctsAgent.mcts.root) {
+                        for (const [moveKey, child] of window.mctsAgent.mcts.root.children.entries()) {
+                            moveValues.set(moveKey, child.meanValue);
+                        }
+                    }
+                    
+                    policyData = {
+                        policy: mctsResult.policyData.policy,
+                        visitCounts: mctsResult.policyData.visitCounts,
+                        value: mctsResult.rootValue || 0,
+                        moveValues: moveValues,
+                        source: 'mcts'
+                    };
+                } else {
+                    // Fallback to NN
+                    const nnResult = await getNNPolicy();
+                    const policyProbs = softmax(nnResult.policy);
+                    policyData = {
+                        policy: policyProbs,
+                        visitCounts: null,
+                        value: nnResult.value,
+                        moveValues: null,
+                        source: 'nn'
+                    };
+                }
             }
         }
         
