@@ -1,5 +1,7 @@
 {
   "models": [
+    "checkpoint_SE_iter_130.onnx",
+    "checkpoint_SE_iter_130.quant.onnx",
     "checkpoint_SE_iter_77.onnx",
     "checkpoint_small_iter_300.onnx",
     "checkpoint_small_iter_150.onnx",

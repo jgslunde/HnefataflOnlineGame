@@ -11,10 +11,63 @@ import torch
 torch.set_flush_denormal(True)
 
 import sys
+import os
 from pathlib import Path
+import numpy as np
 
 # Add Python_example to path
 sys.path.insert(0, str(Path(__file__).parent / "Python_example"))
+
+import onnx
+from onnxruntime.quantization import quantize_static, CalibrationDataReader, QuantType, QuantFormat
+
+class BrandubhDataReader(CalibrationDataReader):
+    """
+    Generates calibration data for static quantization.
+    This helps the quantizer determine the dynamic range of activations.
+    """
+    def __init__(self, num_samples=100):
+        self.num_samples = num_samples
+        self.current_index = 0
+        # Create random board states for calibration
+        # In a production scenario, real game states from a replay buffer are better,
+        # but random states work reasonably well for determining value ranges.
+        self.data = []
+        for _ in range(num_samples):
+            # Shape: (1, 4, 7, 7) matching your network input
+            input_tensor = np.random.randn(1, 4, 7, 7).astype(np.float32)
+            self.data.append({'input': input_tensor})
+
+    def get_next(self):
+        if self.current_index < self.num_samples:
+            batch = self.data[self.current_index]
+            self.current_index += 1
+            return batch
+        else:
+            return None
+
+def quantize_onnx_model(onnx_fp32_path, onnx_quant_path):
+    """
+    Quantizes the ONNX model to INT8 using Static Quantization.
+    """
+    print(f"\nQuantizing model to {onnx_quant_path}...")
+    
+    # 1. Create calibration data reader
+    dr = BrandubhDataReader(num_samples=50)
+    
+    # 2. Perform Static Quantization
+    # We use QOperator format which is generally faster for x86/WASM backends
+    # We use QUInt8 for activations and QInt8 for weights (standard config)
+    quantize_static(
+        model_input=onnx_fp32_path,
+        model_output=onnx_quant_path,
+        calibration_data_reader=dr,
+        quant_format=QuantFormat.QOperator,
+        activation_type=QuantType.QUInt8,
+        weight_type=QuantType.QInt8,
+    )
+    print("✓ Quantization complete.")
+
 
 from network import BrandubhNet
 
@@ -296,7 +349,7 @@ if __name__ == '__main__':
     # Create output directory if needed
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     
-    # Export model
+    # Export Standard FP32 model
     success = export_model_to_onnx(
         args.checkpoint, 
         args.output, 
@@ -309,18 +362,28 @@ if __name__ == '__main__':
     if not success:
         print("\n✗ Export failed!")
         sys.exit(1)
-    
-    # Test if requested
-    if args.test:
-        test_success = test_exported_model(args.output)
-        if not test_success:
-            print("\n⚠ Test failed, but model may still work in browser")
-    
-    print(f"\n{'='*60}")
-    print("✓ Export complete!")
-    print('='*60)
-    print(f"\nONNX model saved to: {args.output}")
-    print("\nNext steps:")
-    print("  1. Test locally: python3 -m http.server 8000")
-    print("  2. Visit: http://localhost:8000/test_mcts.html")
-    print("  3. Deploy to GitHub Pages")
+
+    # --- NEW: Perform Quantization ---
+    quantized_output = str(Path(args.output).with_suffix('.quant.onnx'))
+    try:
+        quantize_onnx_model(args.output, quantized_output)
+        
+        # Verify sizes
+        fp32_size = os.path.getsize(args.output) / (1024 * 1024)
+        int8_size = os.path.getsize(quantized_output) / (1024 * 1024)
+        print(f"\nSize Comparison:")
+        print(f"  FP32: {fp32_size:.2f} MB")
+        print(f"  INT8: {int8_size:.2f} MB ({fp32_size/int8_size:.1f}x smaller)")
+        
+        # Optional: update args.output to point to quantized model for testing
+        if args.test:
+            print("\nTesting Quantized Model:")
+            test_exported_model(quantized_output)
+
+    except ImportError:
+        print("\n⚠ onnxruntime-tools not found. Skipping quantization.")
+        print("  Install with: pip install onnxruntime-tools")
+    except Exception as e:
+        print(f"\n✗ Quantization failed: {e}")
+        import traceback
+        traceback.print_exc()

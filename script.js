@@ -1245,7 +1245,7 @@ async function populateModelSelector() {
     
     // List of known models (fallback)
     let knownModels = [
-        'checkpoint_SE_iter_77.onnx',
+        'checkpoint_SE_iter_130.onnx',
     ];
     
     try {
@@ -1311,7 +1311,7 @@ async function populateModelSelector() {
         // Select current model
         if (window.mctsAgent && window.mctsAgent.currentModelPath === fullPath) {
             option.selected = true;
-        } else if (fullPath.includes('checkpoint_SE_iter_77.onnx')) {
+        } else if (fullPath.includes('checkpoint_SE_iter_130.onnx')) {
             option.selected = true; // Default selection
         }
         
