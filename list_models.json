@@ -1,5 +1,6 @@
 {
   "models": [
+    "checkpoint_SE_32x6_iter_204.onnx",
     "checkpoint_SE_iter_130.onnx",
     "checkpoint_SE_iter_130.quant.onnx",
     "checkpoint_SE_iter_77.onnx",
