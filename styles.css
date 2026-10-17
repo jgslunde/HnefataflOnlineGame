@@ -4,29 +4,70 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
-    height: 100vh; /* Take full viewport height */
-    flex-direction: column; /* Stack main items (board+names, buttons) vertically */
+    min-height: 100vh;
+    margin: 0;
+    flex-direction: column;
+    font-family: monospace;
+}
+
+/* Variant, rules and model above the board */
+#game-info {
+    width: 90vh;
+    font-size: 1.6vh;
+    color: #9a9a9a;
+    margin-bottom: 1vh;
+    line-height: 1.5;
+}
+
+#variant-label {
+    color: white;
+    font-weight: bold;
+    margin-right: 1vh;
+}
+
+#rules-label {
+    margin-right: 1vh;
+}
+
+#model-label {
+    color: #7d8ba0;
+}
+
+#model-warning {
+    color: #f0c060;
+}
+
+#status-line {
+    color: #8fb0e0;
+}
+
+#status-line.error {
+    color: #ff8080;
 }
 
 #board-and-players {
     width: 90vh;
-    height: 73vh;
+    height: 72vh;
     position: relative;
     display: flex;
-    /* justify-content: center; */
     justify-content: space-between;
     align-items: center;
 }
 
+/* Cell size follows the board size: the board is always about 70vh wide */
+#board-table {
+    --n: 7;
+    --cell: calc(70vh / var(--n));
+    border-collapse: collapse;
+    border: none;
+}
+
 #player-names {
     font-size: 3.2vh;
-    font-family: monospace;
     display: flex;
     flex-direction: column;
-    justify-content: space-between; /* Distribute names evenly, top and bottom */
-    height: 100%; /* Make it take the full height of the container */
-    margin-left: 20px; /* Some spacing from the board */
-    align-content: left;
+    justify-content: space-between;
+    margin-left: 20px;
     height: 70vh;
 }
 
@@ -51,18 +92,24 @@ body {
     border-radius: 0.2vh;
 }
 
+#eval-detail {
+    font-size: 1.4vh;
+    color: #888;
+    margin-top: 0.5vh;
+    min-height: 1.4vh;
+}
+
 #buttons-container {
     display: flex;
     flex-direction: row;
-    align-items: flex-start;  /* Align items to top instead of center */
-    /* justify-content: center; */
+    align-items: flex-start;
     width: 90vh;
-    margin-top: 30px;
+    margin-top: 2vh;
 }
 
 #help-container {
     display: flex;
-    flex-direction: column;  /* Stack buttons vertically */
+    flex-direction: column;
     gap: 1vh;
 }
 
@@ -72,9 +119,9 @@ body {
     gap: 1vh;
 }
 
-    
 button {
-    width: 9vh;
+    min-width: 9vh;
+    white-space: nowrap;
     height: 4vh;
     font-size: 1.5vh;
     font-family: monospace;
@@ -86,18 +133,21 @@ button {
     transition: background-color 0.3s;
 }
 
-/* Action buttons (Undo, Restart) - more prominent */
+button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
 button.action-btn {
     background-color: #4a5a72;
     color: white;
     font-weight: bold;
 }
 
-button.action-btn:hover {
+button.action-btn:hover:not(:disabled) {
     background-color: #5a6a82;
 }
 
-/* Info buttons (Help, Settings) - darker than action buttons */
 button.info-btn {
     background-color: #2d3540;
     color: white;
@@ -108,7 +158,18 @@ button.info-btn:hover {
     background-color: #3d4550;
 }
 
-/* Tooltip icon styling */
+button.small-btn {
+    min-width: 0;
+    width: auto;
+    height: auto;
+    font-size: 1.4vh;
+    padding: 0.3vh 0.8vh;
+    margin-left: 1vh;
+    background-color: #2d3540;
+    color: white;
+}
+
+/* Tooltips */
 .tooltip-icon {
     display: inline-block;
     width: 1.4vh;
@@ -166,133 +227,161 @@ button.info-btn:hover {
     opacity: 1;
 }
 
-
-table {
-    border-collapse: collapse;  /* This ensures that the borders of adjacent cells are merged */
-    border: none;  /* Remove table border */
-}
-
-td {
+/* Board */
+#board td {
     cursor: default;
-    width: 10vh;
-    height: 10vh;
+    width: var(--cell);
+    height: var(--cell);
+    padding: 0;
     text-align: center;
     vertical-align: middle;
-    font-size: 5vh;
+    font-size: calc(var(--cell) * 0.5);
+    line-height: 1;
     border: none;
-    transition: background-color 0.3s;  /* Smooth transition for highlighting */
-    position: relative;  /* For positioning policy overlay */
-}
-
-/* Policy overlay for visualization */
-.policy-overlay {
-    position: absolute;
-    bottom: 2px;
-    right: 2px;
-    background-color: rgba(0, 0, 0, 0.75);
-    color: white;
-    font-size: 1.5vh;
-    padding: 2px 4px;
-    border-radius: 3px;
-    pointer-events: none !important;  /* Don't interfere with clicks */
-    font-family: monospace;
-    font-weight: bold;
-    z-index: 10;
-    user-select: none;  /* Prevent text selection */
-}
-
-/* Hover effects - only on devices with true hover capability (not touch screens) */
-@media (hover: hover) {
-    /* For the attacker (only when not AI turn) */
-    #board.attacker:not(.ai-turn) td.⚫:hover {
-        cursor: pointer;
-        background-color: rgba(50, 50, 50, 0.1);
-    }
-
-    /* For the defender (only when not AI turn) */
-    #board.defender:not(.ai-turn) td.⚪:hover, 
-    #board.defender:not(.ai-turn) td.⬜:hover {
-        cursor: pointer;
-        background-color: rgba(50, 50, 50, 0.1);
-    }
-}
-
-/* Disable pointer cursor on pieces during AI turn */
-#board.ai-turn td.⚫,
-#board.ai-turn td.⚪,
-#board.ai-turn td.⬜ {
-    cursor: default;
-}
-
-/* Prevent mobile tap highlight and active states */
-td {
+    transition: background-color 0.3s;
+    position: relative;
     -webkit-tap-highlight-color: transparent;
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
 }
 
-/* Light squares */
-tr:nth-child(odd) td:nth-child(odd),
-tr:nth-child(even) td:nth-child(even) {
+#board td.light {
     background-color: #b58863;
-    /* background-color: #62a6d6; */
 }
 
-/* Dark squares */
-tr:nth-child(odd) td:nth-child(even),
-tr:nth-child(even) td:nth-child(odd) {
+#board td.dark {
     background-color: #e9c387;
-    /* background-color: #4c98cf; */
 }
 
-/* Corner squares */
-tr:first-child td:first-child,
-tr:first-child td:last-child,
-tr:last-child td:first-child,
-tr:last-child td:last-child {
-    background-color: #7b7b7b; /* Example color; adjust as you like */
+#board td.corner {
+    background-color: #7b7b7b;
 }
 
+#board td.throne {
+    background-color: #8a6a4a;
+    box-shadow: inset 0 0 0 calc(var(--cell) * 0.08) #6f5236;
+}
+
+/* The last move: its two squares light up, stay lit briefly, then fade out (flashLastMove in script.js) */
+#board td.last-move::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    /* The grey of a selected square (td.selected below, which shows as about rgb(84, 84, 84)) */
+    background-color: rgba(84, 84, 84, 0.8);
+    pointer-events: none;
+    animation: last-move-fade 1s ease-out forwards;
+}
+
+@keyframes last-move-fade {
+    0%, 30% { opacity: 1; }
+    100% { opacity: 0; }
+}
 
 #board td.selected {
-    background-color: rgba(120, 120, 120, 0.7);  /* Example color; feel free to adjust */
+    background-color: rgba(120, 120, 120, 0.7);
 }
 
-/* Highlighting for legal squares */
-td.legal-move {
+#board .piece {
     position: relative;
+    z-index: 1;
+    display: inline-block;
 }
 
-td.legal-move::after {
+#board .piece.fading {
+    animation: fadeOut 0.3s ease-out forwards;
+}
+
+/* Hover only on devices that can hover, and only on the human player's own pieces */
+@media (hover: hover) {
+    #board.attacker:not(.ai-turn) td.attacker:hover,
+    #board.defender:not(.ai-turn) td.defender:hover,
+    #board.defender:not(.ai-turn) td.king:hover {
+        cursor: grab;
+        filter: brightness(0.9);
+    }
+
+    #board td.legal-move:hover {
+        filter: brightness(0.7);
+        cursor: pointer;
+    }
+}
+
+/* Legal targets of the selected piece */
+#board td.legal-move::after {
     content: '';
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 2vh;
-    height: 2vh;
+    width: calc(var(--cell) * 0.2);
+    height: calc(var(--cell) * 0.2);
     border-radius: 50%;
-    background-color: var(--move-indicator-color, rgba(255, 255, 255, 0.6));
     pointer-events: none;
 }
 
-/* Darken legal move squares on hover */
-td.legal-move:hover {
-    filter: brightness(0.7);
-}
-
-/* Black pieces get black indicators */
-.attacker td.legal-move::after {
+#board.attacker td.legal-move::after {
     background-color: rgba(0, 0, 0, 0.5);
 }
 
-/* White pieces get white indicators */
-.defender td.legal-move::after {
+#board.defender td.legal-move::after {
     background-color: rgba(255, 255, 255, 0.6);
 }
 
-/* The overlay styles */
+/* Move suggestion on a square: value for the side to move and share of the search */
+.policy-overlay {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    background-color: rgba(0, 0, 0, 0.75);
+    color: white;
+    font-size: max(9px, calc(var(--cell) * 0.15));
+    line-height: 1.2;
+    padding: 1px 3px;
+    border-radius: 3px;
+    pointer-events: none;
+    font-weight: bold;
+    z-index: 10;
+    white-space: nowrap;
+}
+
+/* The floating piece of a move animation */
+.moving-piece {
+    position: fixed;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 1000;
+    transition: left 0.4s ease-in-out, top 0.4s ease-in-out;
+}
+
+/* Drag and drop. On touch screens the board does not scroll the page, so a finger can drag pieces. */
+#board-table {
+    touch-action: none;
+}
+
+.moving-piece.dragged-piece {
+    transition: none;
+    transform: scale(1.15);
+    filter: drop-shadow(0 0.6vh 0.6vh rgba(0, 0, 0, 0.5));
+}
+
+#board td.drag-source .piece {
+    visibility: hidden;
+}
+
+#board td.drag-over {
+    box-shadow: inset 0 0 0 calc(var(--cell) * 0.06) rgba(255, 255, 255, 0.75);
+}
+
+body.dragging,
+body.dragging #board td {
+    cursor: grabbing !important;
+}
+
+/* Game over message */
 #overlay {
     position: absolute;
     top: 0;
@@ -302,19 +391,27 @@ td.legal-move:hover {
     display: flex;
     justify-content: center;
     align-items: center;
-    background-color: rgba(0, 0, 0, 0.5); /* Semi-transparent black background */
-    font-size: 50px;
-    font-family: monospace;
+    text-align: center;
+    background-color: rgba(0, 0, 0, 0.5);
+    font-size: 5vh;
     color: white;
-    z-index: 10; /* Make sure it's on top of other elements */
+    z-index: 15;
+    cursor: pointer;
 }
 
-/* The class that hides elements */
 #overlay.hidden {
     display: none;
 }
-#helpText,
-#settingsText {
+
+#winMessage small {
+    display: block;
+    font-size: 2vh;
+    color: #ccc;
+    margin-top: 1vh;
+}
+
+/* Panels (help, settings, new game) over the board */
+.panel {
     position: absolute;
     top: 0;
     left: 0;
@@ -322,26 +419,112 @@ td.legal-move:hover {
     height: 100%;
     display: flex;
     justify-content: center;
-    align-items: center;
-    background-color: rgba(0, 0, 0, 0.9);
-    font-size: 50px;
-    font-family: monospace;
+    align-items: flex-start;
+    background-color: rgba(0, 0, 0, 0.92);
     color: white;
     z-index: 20;
+    overflow-y: auto;
+}
+
+.panel.hidden {
+    display: none;
 }
 
 .panel-content {
     position: relative;
+    font-size: 1.9vh;
+    max-width: 72vh;
+    padding: 3vh 2vh;
+    line-height: 1.4;
+}
+
+.panel-title {
+    font-weight: bold;
+    font-size: 2.2vh;
+    margin: 1vh 0;
+}
+
+.panel-subtitle {
+    font-weight: bold;
+    margin: 2vh 0 1vh;
+}
+
+.panel p {
+    margin: 0 0 1vh;
+}
+
+#rules-text {
+    margin: 0 0 2vh;
+    padding-left: 2.5vh;
+}
+
+#rules-text li {
+    margin-bottom: 0.5vh;
+}
+
+.panel .field {
+    display: block;
+    margin: 1.2vh 0 0.3vh;
+}
+
+.panel .field select,
+.panel .field input[type="range"] {
+    display: block;
+    width: 100%;
+    margin-top: 0.5vh;
+}
+
+.panel select {
+    padding: 0.5vh;
+    font-size: 1.8vh;
+    font-family: monospace;
+    background-color: #1a2332;
+    color: white;
+    border: 2px solid #3a4a62;
+}
+
+.panel .check {
+    display: block;
+    margin: 1vh 0;
+    cursor: pointer;
+}
+
+.panel fieldset {
+    border: 1px solid #333;
+    margin: 1vh 0;
+    padding: 0.5vh 1.5vh;
+}
+
+.panel fieldset:disabled {
+    opacity: 0.55;
+}
+
+.hint {
+    font-size: 1.6vh;
+    color: #888;
+    margin-top: 0.3vh;
+}
+
+.warning {
+    color: #f0c060;
+    margin: 1vh 0;
+}
+
+.panel-buttons {
+    display: flex;
+    gap: 1vh;
+    margin-top: 2vh;
 }
 
 .close-btn {
+    min-width: 0;
     position: absolute;
-    top: -3vh;
-    right: -3vh;
+    top: 1vh;
+    right: 0;
     background: none;
     border: none;
     color: white;
-    font-size: 4vh;
+    font-size: 3.5vh;
     cursor: pointer;
     width: auto;
     height: auto;
@@ -354,57 +537,23 @@ td.legal-move:hover {
     color: #ff6666;
 }
 
-/* The class that hides elements */
-#helpText.hidden,
-#settingsText.hidden {
-    display: none;
-}
-
-input[type="radio"] {
-    appearance: none;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-    width: 20px;
-    height: 20px;
-    border: 2px solid #999; /* Adjust as desired */
-    vertical-align: middle;
-    cursor: pointer;
-}
-
-input[type="radio"]:checked {
-    background-color: #969696; /* Adjust color as desired */
-    border-color: #333; /* Adjust color as desired */
-}
-
-input[type="radio"]:focus {
-    outline: none;
-}
-
-#ai-difficulty-container label {
-    font-size: 1.8vh;
-    font-family: monospace;
-}
-
-#ai-difficulty-container {
-    width: 18vh;
-}
-
-#player-config-container {
+/* Player and display options below the board */
+.player-config-container {
     width: 18vh;
     margin-right: 2vh;
     display: flex;
     flex-direction: column;
-    align-items: stretch;  /* Ensure children stretch to full width */
+    align-items: stretch;
 }
 
-#player-config-container > div:first-child {
-    /* Label div - fixed height to prevent layout shift */
-    height: 3.6vh;  /* Accommodate two lines of text */
+.config-label {
+    font-size: 1.8vh;
+    height: 3.6vh;
     line-height: 1.8vh;
     margin-bottom: 5px;
 }
 
-#player-config-container select {
+.player-config-container select {
     width: 100%;
     padding: 5px;
     font-size: 1.6vh;
@@ -415,196 +564,277 @@ input[type="radio"]:focus {
     cursor: pointer;
 }
 
-#player-config-container select:hover {
+.player-config-container select:hover {
     background-color: #2a3542;
     border-color: #4a5a72;
 }
 
-#player-config-container select option {
+.player-config-container select option {
     background-color: #1a2332;
     color: white;
+}
+
+.difficulty {
+    margin-top: 5px;
+}
+
+.difficulty label {
+    font-size: 1.6vh;
+    display: block;
+    margin-bottom: 3px;
+}
+
+.difficulty input {
+    width: 100%;
+}
+
+.range-ends {
+    display: flex;
+    justify-content: space-between;
+    font-size: 1.4vh;
+    margin-top: 2px;
 }
 
 .hidden {
     display: none;
 }
 
-/* Animation keyframes */
-@keyframes flash {
-    0%, 100% { background-color: inherit; }
-    50% { background-color: rgba(255, 255, 153, 0.4); }
-}
-
 @keyframes fadeOut {
-    from { 
-        opacity: 1; 
-        transform: scale(1); 
-        color: inherit;
+    from {
+        opacity: 1;
+        transform: scale(1);
     }
-    to { 
-        opacity: 0; 
-        transform: scale(0.5); 
-        color: transparent;
+    to {
+        opacity: 0;
+        transform: scale(0.5);
     }
 }
 
-/* Animation classes */
-.flash-animation {
-    animation: flash 0.3s ease-in-out;
-}
-
-.fade-out-animation {
-    color: inherit;
-}
-
-.fade-out-animation::first-line {
-    animation: fadeOut 0.3s ease-out forwards;
-}
-
-
-#attacker-label, #defender-label {
+#attacker-label,
+#defender-label {
     color: #868686;
+}
+
+/* "Defender:" above "Human", "Eval:" above the value (on one line on phones) */
+.side-name,
+.eval-title {
+    display: block;
+}
+
+#play-options {
+    display: flex;
+}
+
+#settings-play-slot:empty {
+    display: none;
 }
 
 .active-player {
     font-weight: bold;
-    color: #ffffff !important; /* or any other color you prefer */
+    color: #ffffff !important;
 }
 
-
-
-/* Responsive layout for screens smaller than 768 pixels */
+/* Phones and narrow windows: everything on one screen without scrolling. A short line of game
+   info, the board as large as fits, one row with the players and the eval bar, and one row of
+   buttons. The player and analysis menus move into the Settings panel (placePlayOptions in
+   script.js). */
 @media only screen and (max-width: 768px) {
     body {
-        height: auto;
+        justify-content: flex-start;
         min-height: 100vh;
-        padding: 10px 0;
+        min-height: 100dvh;
+        padding: 6px 0 calc(6px + env(safe-area-inset-bottom));
+        box-sizing: border-box;
     }
 
-    td {
-        cursor: default;
-        width: 50px;
-        height: 50px;
-        text-align: center;
-        vertical-align: middle;
-        font-size: 32px;
-        border: none;
-        transition: background-color 0.3s;
+    #game-info {
+        width: calc(100vw - 16px);
+        font-size: 11px;
+        line-height: 1.35;
+        margin-bottom: 5px;
     }
 
+    #model-label {
+        display: none;
+    }
+
+    /* The board takes the full width unless the screen is too short; about 200px stay for the rest */
+    #board-table {
+        --cell: min(calc((100vw - 8px) / var(--n)), calc((100vh - 200px) / var(--n)));
+    }
+
+    @supports (height: 100dvh) {
+        #board-table {
+            --cell: min(calc((100vw - 8px) / var(--n)), calc((100dvh - 200px) / var(--n)));
+        }
+    }
+
+    /* The board (with the players) centred in the free height, the buttons at the bottom of the screen */
     #board-and-players {
         flex-direction: column;
         align-items: center;
-        width: 98%;
-        height: auto;
-        margin-bottom: 15px;
-    }
-    
-    #player-names {
-        font-size: 16px;  /* Much smaller text for mobile */
-        flex-direction: row;
         width: 100%;
-        margin-bottom: 15px;
         height: auto;
-        padding: 5px 0;
-    }
-    
-    #attacker-label, #defender-label {
-        flex: 1;
-        text-align: center;
-        line-height: 1.3;
+        margin: auto 0;
     }
 
-    #buttons-container {
-        display: grid;
-        grid-template-columns: 1fr 1fr;  /* 2 columns */
+    #player-names {
+        flex-direction: row;
+        align-items: center;
+        width: calc(100vw - 16px);
+        height: auto;
+        margin: 8px 0 0;
+        font-size: 14px;
         gap: 10px;
-        width: 95%;
-        max-width: 400px;
+    }
+
+    .side-name {
+        display: inline;
+    }
+
+    #defender-label,
+    #attacker-label {
+        flex: 1;
+        line-height: 1.2;
+    }
+
+    #attacker-label {
+        text-align: right;
+    }
+
+    #AI-eval {
+        flex: 1.3;
+        text-align: center;
+        font-size: 13px;
+    }
+
+    .eval-title {
+        display: inline;
+        color: #888;
+    }
+
+    #eval-bar-container {
+        height: 7px;
+        margin-top: 3px;
+        border-radius: 3px;
+    }
+
+    #eval-bar {
+        width: 3px;
+    }
+
+    #eval-detail {
+        font-size: 10px;
+        min-height: 0;
+        margin-top: 2px;
+    }
+
+    /* One row of buttons */
+    #buttons-container {
+        display: block;
+        width: calc(100vw - 16px);
         margin-top: 10px;
     }
 
-    #player-config-container {
+    #help-container {
+        flex-direction: row;
+        gap: 6px;
+    }
+
+    #help-container .button-row {
+        display: contents;
+    }
+
+    button {
+        flex: 1;
+        min-width: 0;
+        height: 42px;
+        font-size: clamp(11px, 3.4vw, 14px);
+        padding: 0 2px;
+    }
+
+    button.small-btn {
+        flex: none;
+        height: auto;
+        font-size: 12px;
+        padding: 4px 8px;
+    }
+
+    .close-btn {
+        flex: none;
+        font-size: 28px;
+    }
+
+    /* The player and analysis menus at the top of the Settings panel */
+    #settings-play-slot #play-options {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin: 10px 0 6px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid #333;
+    }
+
+    .player-config-container {
         width: 100%;
         margin-right: 0;
     }
 
-    #player-config-container > div:first-child {
-        font-size: 12px;  /* Much smaller label text */
+    .config-label {
+        font-size: 13px;
         height: auto;
         line-height: 1.2;
-        margin-bottom: 3px;
-        min-height: 30px;  /* Ensure space for two lines */
+        margin-bottom: 4px;
     }
 
-    #player-config-container select {
+    /* Hover tooltips do not work on touch; the help panel explains the options */
+    .tooltip-icon {
+        display: none;
+    }
+
+    .player-config-container select {
         font-size: 14px;
         padding: 8px 4px;
-        width: 100%;
     }
 
-    .tooltip-icon {
-        width: 14px;
-        height: 14px;
-        line-height: 14px;
-        font-size: 10px;
-        margin-left: 3px;
+    .difficulty label,
+    .range-ends {
+        font-size: 12px;
     }
 
-    .tooltip-text {
-        width: 200px;
-        font-size: 11px;
-        padding: 8px;
-        margin-left: -100px;
+    .panel {
+        position: fixed;
     }
 
-    #help-container {
-        grid-column: 1 / -1;  /* Span both columns */
-        width: 100%;
-    }
-
-    #help-container .button-row {
-        width: 100%;
-        justify-content: space-between;
-    }
-
-    button {
-        width: 100%;
-        min-width: 70px;
-        height: 45px;
+    .panel-content {
         font-size: 14px;
-        font-family: monospace;
-        margin: 0;
-        padding: 8px 12px;
-        cursor: pointer;
+        max-width: 92vw;
+        padding: 20px 12px;
     }
 
-    button.action-btn,
-    button.info-btn {
+    .panel-title {
+        font-size: 17px;
+    }
+
+    .panel select {
         font-size: 14px;
     }
 
-    td.legal-move::after {
-        width: 15px;  /* Smaller indicator for mobile */
-        height: 15px;
+    .hint {
+        font-size: 12px;
     }
 
     .policy-overlay {
-        font-size: 9px;  /* Smaller but still readable on mobile */
-        padding: 1px 3px;
+        padding: 0 2px;
         bottom: 1px;
         right: 1px;
     }
 
-    #eval-bar {
-        width: 3px;  /* Thin red line, not 50px */
-        font-size: 14px;
+    #overlay {
+        font-size: 28px;
     }
-    
-    #eval-bar-container {
-        width: 100%;
-        height: 12px;  /* Fixed height instead of vh */
-        border-radius: 3px;
-        margin-top: 5px;
+
+    #winMessage small {
+        font-size: 14px;
     }
 }

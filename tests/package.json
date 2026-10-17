@@ -1,0 +1,14 @@
+{
+  "name": "tafl-page-tests",
+  "private": true,
+  "description": "Tests for the Tafl page: engine and search against the Python training code, and the page in headless Chrome.",
+  "scripts": {
+    "test": "node test_engine.js && node test_mcts.js && node test_page.js",
+    "engine": "node test_engine.js",
+    "mcts": "node test_mcts.js",
+    "page": "node test_page.js"
+  },
+  "devDependencies": {
+    "onnxruntime-web": "1.20.1"
+  }
+}

@@ -1,2367 +1,1308 @@
-Module['onRuntimeInitialized'] = function() {
-    // Now you can safely call functions from your WebAssembly module
-    console.log("Emscripten module loaded.")
+/**
+ * The page: board display, input, game flow, AI players, evaluation bar and move suggestions.
+ *
+ * The game itself is a TaflGame (tafl.js); the DOM only shows it. The network and the tree search
+ * run in a Web Worker (searchWorker.js, reached through searchClient.js). Which models exist, and
+ * the rules and search settings each was trained with, comes from models.json and the models'
+ * .json descriptions.
+ */
+'use strict';
+
+const { TaflGame, VARIANTS, ATTACKER, DEFENDER, KING, ATTACKER_PLAYER, encodeMove, moveFrom, moveTo } = Tafl;
+const { chooseMove } = TaflMCTS;
+const { modelSearchSettings, modelRules } = TaflNetwork;
+
+const SIDES = ['attacker', 'defender'];
+const SIDE_NAMES = ['Attacker', 'Defender'];
+const PIECE_GLYPHS = { [ATTACKER]: '⚫', [DEFENDER]: '⚪', [KING]: '⬜' };
+const PIECE_CLASSES = { [ATTACKER]: 'attacker', [DEFENDER]: 'defender', [KING]: 'king' };
+const SIZES = [7, 9, 11];
+// Previous positions a game keeps, for networks with history input planes
+const KEEP_BOARDS = 32;
+// Rules of a board size when no model says otherwise: those of the current training runs
+const FALLBACK_RULES = {
+    7: { kingCapturePieces: 2, kingCanCapture: true, throneIsHostile: false, throneEnabled: false },
+    9: { kingCapturePieces: 2, kingCanCapture: true, throneIsHostile: false, throneEnabled: false },
+    11: { kingCapturePieces: 4, kingCanCapture: true, throneIsHostile: true, throneEnabled: true },
+};
+// Endless analysis stops here: the search tree grows with every simulation
+const MAX_ANALYSIS_SIMS = { 7: 100000, 9: 50000, 11: 25000 };
+const SLIDE_MS = 400;
+const FADE_MS = 300;
+const PREFS_KEY = 'tafl-prefs-v1';
+
+const $ = (id) => document.getElementById(id);
+const boardTable = $('board-table');
+const boardEl = $('board');
+
+const app = {
+    size: 7,
+    rules: Tafl.normalizeRules(FALLBACK_RULES[7]),
+    game: null,
+    history: [],          // [{game, lastMove}] before each move, for undo
+    lastMove: null,
+    selected: -1,         // selected square, or -1
+    cells: [],            // per square {td, piece}
+    models: [],           // manifest entries with their descriptions (entry.desc) and board size
+    defaults: {},         // default model id per board size
+    modelBySize: {},      // the model last chosen for each board size
+    model: null,          // the model of the current game (manifest entry) or null
+    modelState: 'none',   // none, loading, ready, error
+    modelError: null,
+    msPerCall: null,
+    searchParams: modelSearchSettings(null),
+    players: {
+        attacker: { type: 'human', sims: 200, depth: 4 },
+        defender: { type: 'human', sims: 200, depth: 4 },
+    },
+    evalMode: 'nn-mcts',
+    policyMode: 'off',
+    temperature: 0.4,
+    analysisSims: 200,
+    continuous: false,
+    token: 0,             // changes with every position change; async work checks it
+    epoch: 0,             // changes when the game is replaced (undo, restart): stops animations
+    animating: false,
+    analysis: { stats: null, nn: null },
+    analysisJobs: [],
 };
 
-// Helper function to get the piece character from a cell, ignoring policy overlay
-function getPieceFromCell(cell) {
-    for (let node of cell.childNodes) {
-        if (node.nodeType === Node.TEXT_NODE) {
-            return node.textContent.trim();
-        }
-    }
-    return '';
+let client = null;
+try {
+    client = new SearchClient('searchWorker.js');
+} catch (error) {
+    console.error('[Page] Cannot start the search worker:', error);
 }
 
-// Helper function to set the piece character in a cell, preserving policy overlay
-function setPieceInCell(cell, piece) {
-    for (let node of cell.childNodes) {
-        if (node.nodeType === Node.TEXT_NODE) {
-            node.textContent = piece;
+// The Minimax AI is C++ compiled to WebAssembly (Cpp_ai.js); it knows only 7x7 Brandubh
+let cppReady = false;
+if (typeof Module !== 'undefined') {
+    const previous = Module.onRuntimeInitialized;
+    Module.onRuntimeInitialized = () => {
+        cppReady = true;
+        if (previous) previous();
+    };
+}
+
+// ----------------------------------------------------------------------------------------------
+// Rules in words
+// ----------------------------------------------------------------------------------------------
+
+function throneHostilityText(size, rules) {
+    if (!rules.throneEnabled) return null;
+    if (rules.throneIsHostile) return 'the empty throne is hostile to every piece';
+    return VARIANTS[size].throneHostileToAttackers
+        ? 'the empty throne is hostile to attackers only'
+        : 'the empty throne is hostile to no piece';
+}
+
+function rulesSummary(size, rules) {
+    const parts = [
+        rules.kingCapturePieces === 2 ? 'king captured by two'
+            : rules.kingCapturePieces === 3 ? 'king captured on 3 sides' : 'king captured on 4 sides',
+    ];
+    if (!rules.kingCanCapture) parts.push('unarmed king');
+    if (!rules.throneEnabled) parts.push('no throne');
+    else parts.push(rules.throneIsHostile ? 'hostile throne'
+        : VARIANTS[size].throneHostileToAttackers ? 'throne (hostile to attackers)' : 'throne (not hostile)');
+    if (VARIANTS[size].encirclement) parts.push('encirclement');
+    return parts.join(' · ');
+}
+
+/** What differs between the game's rules and a model's training rules, in the model's terms. */
+function rulesDifferences(size, rules, trained) {
+    const out = [];
+    if (rules.kingCapturePieces !== trained.kingCapturePieces) {
+        out.push(trained.kingCapturePieces === 2 ? 'king captured by two'
+            : `king captured on ${trained.kingCapturePieces} sides`);
+    }
+    if (rules.kingCanCapture !== trained.kingCanCapture) out.push(trained.kingCanCapture ? 'armed king' : 'unarmed king');
+    if (rules.throneEnabled !== trained.throneEnabled) out.push(trained.throneEnabled ? 'throne on' : 'no throne');
+    if (trained.throneEnabled && rules.throneIsHostile !== trained.throneIsHostile) {
+        out.push(trained.throneIsHostile ? 'throne hostile to all' : throneHostilityText(size, trained).replace('the empty ', ''));
+    }
+    return out;
+}
+
+function rulesList(size, rules) {
+    const items = [
+        'All pieces, the king included, move like rooks in chess: any number of empty squares in a straight line.',
+        rules.throneEnabled
+            ? 'Only the king may stop on a corner or on the throne (the centre square). Other pieces may pass over the empty throne.'
+            : 'Only the king may stop on a corner. There is no throne: the centre square is an ordinary square.',
+        'A piece is captured when the opponent moves so that it is trapped between two enemies in a line ' +
+        '(not diagonally). Only the moving piece captures, so a piece may safely move in between two enemies.',
+        'Corners count as enemies of every piece in a capture' +
+        (rules.throneEnabled ? `; ${throneHostilityText(size, rules)}. An occupied throne is never hostile.` : '.'),
+        rules.kingCanCapture
+            ? 'The king takes part in captures, both as the moving piece and as the second piece.'
+            : 'The king takes no part in captures, not even as the second piece.',
+        rules.kingCapturePieces === 2
+            ? 'The king is captured like any other piece: between two attackers, or an attacker and a hostile square.'
+            : rules.kingCapturePieces === 3
+                ? 'The king is captured when attackers or hostile squares are on three of its sides.'
+                : 'The king is captured when attackers or hostile squares are on all four sides. The board edge counts as a side, so three attackers capture a king on the edge.',
+    ];
+    if (VARIANTS[size].encirclement) {
+        items.push('Attackers also win by encirclement: when no path of squares free of attackers leads from the king to the board edge.');
+    }
+    items.push('Defenders win when the king reaches a corner. Attackers win when they capture the king.');
+    items.push('A move that would create the same position (with the same player to move) for the third time is not allowed. A player without legal moves loses.');
+    return items;
+}
+
+// ----------------------------------------------------------------------------------------------
+// Models
+// ----------------------------------------------------------------------------------------------
+
+async function loadManifest() {
+    const response = await fetch('models.json', { cache: 'no-cache' });
+    if (!response.ok) throw new Error(`models.json: HTTP ${response.status}`);
+    const manifest = await response.json();
+    const entries = await Promise.all((manifest.models || []).map(async (entry) => {
+        try {
+            const r = await fetch(entry.info, { cache: 'no-cache' });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const desc = await r.json();
+            Tafl.parsePlanes(desc.input.planes);  // throws on input planes this page cannot build
+            if (!VARIANTS[desc.board_size]) throw new Error(`unsupported board size ${desc.board_size}`);
+            return { ...entry, desc, size: desc.board_size };
+        } catch (error) {
+            console.warn(`[Models] Skipping ${entry.id} (${entry.info}): ${error.message}`);
+            return null;
+        }
+    }));
+    app.models = entries.filter(Boolean);
+    app.defaults = manifest.defaults || {};
+}
+
+const modelsForSize = (size) => app.models.filter(m => m.size === size);
+const findModel = (id) => app.models.find(m => m.id === id) || null;
+
+function defaultModelFor(size) {
+    const chosen = findModel(app.modelBySize[size]);
+    if (chosen && chosen.size === size) return chosen;
+    const preset = findModel(app.defaults[size]);
+    if (preset && preset.size === size) return preset;
+    return modelsForSize(size)[0] || null;
+}
+
+function trainedRulesText(model) {
+    const rules = model && modelRules(model.desc);
+    return rules ? rulesSummary(model.size, rules) : 'unknown rules';
+}
+
+function modelNote(model) {
+    if (!model) return 'No network model exists for this board yet; the "NN + MCTS" AI is not available.';
+    const d = model.desc;
+    const s = modelSearchSettings(d);
+    const parts = [
+        d.network_description || '',
+        d.iteration !== undefined && d.iteration !== null ? `training iteration ${d.iteration}` : '',
+        `trained with: ${trainedRulesText(model)}`,
+        `search: c_puct ${s.cPuct}, FPU ${s.fpuReduction}, discount ${s.discount}`,
+    ];
+    let text = parts.filter(Boolean).join('; ') + '.';
+    if (model.note) text += ' ' + model.note;
+    return text;
+}
+
+/** Make a model the AI of the current game (null for none) and load it in the worker. */
+function selectModel(model) {
+    app.model = model;
+    app.modelError = null;
+    app.msPerCall = null;
+    app.searchParams = modelSearchSettings(model && model.desc);
+    updateSearchControls();
+    if (model) app.modelBySize[model.size] = model.id;
+    if (!model || !client) {
+        app.modelState = model && !client ? 'error' : 'none';
+        if (model && !client) app.modelError = 'the search worker could not start (open the page through a web server)';
+        updateInfo();
+        return;
+    }
+    app.modelState = 'loading';
+    updateInfo();
+    // Whatever the AI or the analysis was doing used the old model
+    invalidate();
+    client.loadModel(model.id, model.onnx, model.desc).then((result) => {
+        if (app.model !== model) return;
+        app.modelState = 'ready';
+        app.msPerCall = result.msPerCall;
+        console.log(`[Models] ${model.id}: inputs ${result.inputNames}, outputs ${result.outputNames}, ` +
+            `${result.msPerCall.toFixed(2)} ms per network call`);
+        updateInfo();
+        onPositionChanged();
+    }).catch((error) => {
+        if (app.model !== model) return;
+        app.modelState = 'error';
+        app.modelError = error.message;
+        console.error(`[Models] Loading ${model.id} failed:`, error);
+        updateInfo();
+        onPositionChanged();
+    });
+}
+
+// ----------------------------------------------------------------------------------------------
+// Game flow
+// ----------------------------------------------------------------------------------------------
+
+const currentSide = () => SIDES[app.game.currentPlayer];
+const isAITurn = () => !app.game.gameOver && app.players[currentSide()].type !== 'human';
+// Whether the player to move is the NN + MCTS AI, whose own search then feeds the eval bar and suggestions
+const aiSearchesNow = () => isAITurn() && app.players[currentSide()].type === 'mcts' && app.modelState === 'ready';
+const toAttackerView = (value) => (app.game.currentPlayer === ATTACKER_PLAYER ? value : -value);
+
+function newGame(size, rules, model) {
+    app.epoch++;
+    app.animating = false;
+    removeFloatingPieces();
+    app.size = size;
+    app.rules = Tafl.normalizeRules(rules);
+    app.game = new TaflGame(size, app.rules);
+    app.game.keepBoards = KEEP_BOARDS;
+    app.history = [];
+    app.lastMove = null;
+    app.selected = -1;
+    document.title = VARIANTS[size].name;
+    buildBoard();
+    updatePlayerOptions();
+    updateHelp();
+    // A model that failed to load gets another try with every new game
+    if (model !== app.model || app.modelState === 'error') selectModel(model);
+    updateInfo();
+    savePrefs();
+    onPositionChanged();
+}
+
+/** Stop everything that works on the current position (AI search, analysis). */
+function invalidate() {
+    app.token++;
+    if (client) client.cancel();
+    app.analysisJobs = [];
+    setThinking(false);
+}
+
+/** After every change of position (or of who plays): show it, then let the AI move or analyse. */
+function onPositionChanged() {
+    if (app.animating) return;  // playMove calls this when its animation is done
+    invalidate();
+    const token = app.token;
+    app.selected = -1;
+    app.analysis = { stats: null, nn: null };
+    render();
+    clearSuggestions();
+    updateTurnLabels();
+    updateButtons();
+    if (app.game.gameOver) {
+        showGameOver();
+        return;
+    }
+    hideOverlay();
+    resetEval();
+    startAnalysis(token, aiSearchesNow());
+    if (isAITurn()) {
+        const bothAI = SIDES.every(s => app.players[s].type !== 'human');
+        setTimeout(() => runAI(token), bothAI ? 300 : 30);
+    }
+}
+
+async function runAI(token) {
+    if (token !== app.token || app.animating || !isAITurn()) return;
+    const config = app.players[currentSide()];
+    let move = null;
+    if (config.type === 'minimax' && app.size === 7) {
+        if (!cppReady) {
+            setTimeout(() => runAI(token), 200);
             return;
         }
-    }
-    // If no text node exists, create one
-    const textNode = document.createTextNode(piece);
-    cell.insertBefore(textNode, cell.firstChild);
-}
-
-function isDefender(piece) {
-    return ['⚪', '⬜'].includes(piece);
-}
-
-/**
- * Get a hash string representing the current board position and player
- */
-function getPositionHash(boardElement, player) {
-    let hash = '';
-    for (let row of boardElement.rows) {
-        for (let cell of row.cells) {
-            const piece = getPieceFromCell(cell);
-            hash += piece || '.';
+        setThinking(true);
+        await nextPaint();
+        if (token !== app.token) return;
+        move = runMinimax(app.game, config.depth).move;
+        if (!app.game.isLegalMove(move)) {
+            console.warn(`[AI] Minimax chose ${Tafl.moveName(app.size, move)}, which is not legal under these rules`);
+            move = null;
         }
-    }
-    hash += '|' + player;
-    return hash;
-}
-
-/**
- * Check if a move would cause three-fold repetition
- * Returns true if the resulting position would be the third occurrence
- */
-function wouldCauseThreefoldRepetition(sourceCell, targetCell, boardElement, player) {
-    // Simulate the move
-    const piece = getPieceFromCell(sourceCell);
-    const originalTargetPiece = getPieceFromCell(targetCell);
-    
-    setPieceInCell(targetCell, piece);
-    setPieceInCell(sourceCell, '');
-    
-    // Simulate captures
-    const targetRow = targetCell.parentNode.rowIndex;
-    const targetCol = targetCell.cellIndex;
-    const directions = [
-        { dr: -1, dc: 0 },  // up
-        { dr: 1, dc: 0 },   // down
-        { dr: 0, dc: -1 },  // left
-        { dr: 0, dc: 1 }    // right
-    ];
-    
-    const capturedPieces = []; // Store original pieces to restore
-    
-    for (let dir of directions) {
-        const enemyRow = targetRow + dir.dr;
-        const enemyCol = targetCol + dir.dc;
-        const allyRow = enemyRow + dir.dr;
-        const allyCol = enemyCol + dir.dc;
-
-        if (enemyRow < 0 || enemyRow >= 7 || enemyCol < 0 || enemyCol >= 7) continue;
-        if (allyRow < 0 || allyRow >= 7 || allyCol < 0 || allyCol >= 7) continue;
-
-        const enemyCell = boardElement.rows[enemyRow].cells[enemyCol];
-        const allyCell = boardElement.rows[allyRow].cells[allyCol];
-        
-        const targetPiece = getPieceFromCell(targetCell);
-        const enemyPiece = getPieceFromCell(enemyCell);
-        const allyPiece = getPieceFromCell(allyCell);
-
-        if (targetPiece === '⚫' && enemyPiece === '⚪' && (allyPiece === '⚫' || isRestrictedSquare(allyRow, allyCol))) {
-            capturedPieces.push({ cell: enemyCell, piece: enemyPiece });
-            setPieceInCell(enemyCell, '');
-        } else if ((targetPiece === '⚪' || targetPiece === '⬜') && enemyPiece === '⚫' && (isDefender(allyPiece) || isRestrictedSquare(allyRow, allyCol))) {
-            capturedPieces.push({ cell: enemyCell, piece: enemyPiece });
-            setPieceInCell(enemyCell, '');
-        } else if (targetPiece === '⚫' && enemyPiece === '⬜' && (allyPiece === '⚫' || isRestrictedSquare(allyRow, allyCol))) {
-            capturedPieces.push({ cell: enemyCell, piece: enemyPiece });
-            setPieceInCell(enemyCell, '');
-        }
-    }
-    
-    // Get the position hash after the simulated move (note: player is still the current player after their move)
-    const positionHash = getPositionHash(boardElement, player);
-    
-    // Undo the simulation - restore captured pieces
-    for (let captured of capturedPieces) {
-        setPieceInCell(captured.cell, captured.piece);
-    }
-    
-    // Undo the move
-    setPieceInCell(sourceCell, piece);
-    setPieceInCell(targetCell, originalTargetPiece);
-    
-    // Count occurrences of this position in history
-    const occurrences = positionHistory.filter(hash => hash === positionHash).length;
-    
-    // Debug logging
-    if (occurrences >= 2) {
-        console.log(`THREE-FOLD REPETITION BLOCKED! This position has occurred ${occurrences} times already.`);
-        console.log(`Position hash: ${positionHash.substring(0, 30)}...`);
-    }
-    
-    // If this would be the third occurrence, it's illegal
-    return occurrences >= 2;
-}
-
-/**
- * Record the current position in history
- */
-function recordPosition(boardElement, player) {
-    const positionHash = getPositionHash(boardElement, player);
-    positionHistory.push(positionHash);
-    
-    // Debug: Count occurrences
-    const count = positionHistory.filter(h => h === positionHash).length;
-    if (count > 1) {
-        console.log(`Position occurred ${count} times. Hash: ${positionHash.substring(0, 20)}...`);
-    }
-}
-
-function squaresBetweenAreEmpty(source, target, boardElement) {
-    const sourceRow = source.parentNode.rowIndex;
-    const sourceCol = source.cellIndex;
-    const targetRow = target.parentNode.rowIndex;
-    const targetCol = target.cellIndex;
-
-    if (sourceRow === targetRow) {  // Moving horizontally
-        const startCol = Math.min(sourceCol, targetCol);
-        const endCol = Math.max(sourceCol, targetCol);
-
-        for (let col = startCol + 1; col < endCol; col++) {
-            if (getPieceFromCell(boardElement.rows[sourceRow].cells[col]) !== '') {
-                return false;
-            }
-        }
-    } else if (sourceCol === targetCol) {  // Moving vertically
-        const startRow = Math.min(sourceRow, targetRow);
-        const endRow = Math.max(sourceRow, targetRow);
-
-        for (let row = startRow + 1; row < endRow; row++) {
-            if (getPieceFromCell(boardElement.rows[row].cells[sourceCol]) !== '') {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-function isValidMove(source, target, boardElement) {
-    // Check if moving onto another piece
-    const targetPiece = getPieceFromCell(target);
-    if (['⚫', '⚪', '⬜'].includes(targetPiece)) {
-        return false;
-    }
-
-    // Ensure the move is horizontal or vertical
-    const sourceRow = source.parentNode.rowIndex;
-    const sourceCol = source.cellIndex;
-    const targetRow = target.parentNode.rowIndex;
-    const targetCol = target.cellIndex;
-
-    const isHorizontalMove = sourceRow === targetRow;
-    const isVerticalMove = sourceCol === targetCol;
-
-    if (!isHorizontalMove && !isVerticalMove) {
-        return false;
-    }
-    
-    if (!squaresBetweenAreEmpty(source, target, boardElement)) {
-        return false;
-    }
-
-    // Check for restricted corner squares
-    const isCornerSquare = (row, col) => (row === 0 || row === 6) && (col === 0 || col === 6);
-    const sourcePiece = getPieceFromCell(source);
-    if (isCornerSquare(targetRow, targetCol) && sourcePiece !== '⬜') {
-        return false;
-    }
-
-    // Check for three-fold repetition
-    if (wouldCauseThreefoldRepetition(source, target, boardElement, currentPlayer)) {
-        return false;
-    }
-
-    // All checks passed
-    return true;
-}
-
-function isRestrictedSquare(row, col) {
-    return (row === 0 || row === 6) && (col === 0 || col === 6);
-}
-
-function capturePieces(source, target, boardElement, callback) {
-    const targetRow = target.parentNode.rowIndex;
-    const targetCol = target.cellIndex;
-    const directions = [
-        { dr: -1, dc: 0 },  // up
-        { dr: 1, dc: 0 },   // down
-        { dr: 0, dc: -1 },  // left
-        { dr: 0, dc: 1 }    // right
-    ];
-
-    const capturedCells = [];
-
-    for (let dir of directions) {
-        const enemyRow = targetRow + dir.dr;
-        const enemyCol = targetCol + dir.dc;
-        const allyRow = enemyRow + dir.dr;
-        const allyCol = enemyCol + dir.dc;
-
-        if (enemyRow < 0 || enemyRow >= 7 || enemyCol < 0 || enemyCol >= 7) continue;  // Out of board bounds
-        if (allyRow < 0 || allyRow >= 7 || allyCol < 0 || allyCol >= 7) continue;      // Out of board bounds
-
-        const enemyCell = boardElement.rows[enemyRow].cells[enemyCol];
-        const allyCell = boardElement.rows[allyRow].cells[allyCol];
-        
-        const targetPiece = getPieceFromCell(target);
-        const enemyPiece = getPieceFromCell(enemyCell);
-        const allyPiece = getPieceFromCell(allyCell);
-
-        if (targetPiece === '⚫' && enemyPiece === '⚪' && (allyPiece === '⚫' || isRestrictedSquare(allyRow, allyCol))) {
-            capturedCells.push(enemyCell);
-        } else if ((targetPiece === '⚪' || targetPiece === '⬜') && enemyPiece === '⚫' && (isDefender(allyPiece) || isRestrictedSquare(allyRow, allyCol))) {
-            capturedCells.push(enemyCell);
-        } else if (targetPiece === '⚫' && enemyPiece === '⬜' && (allyPiece === '⚫' || isRestrictedSquare(allyRow, allyCol))) {
-            capturedCells.push(enemyCell);
-        }
-    }
-
-    // Animate captures if any
-    if (capturedCells.length > 0) {
-        capturedCells.forEach(cell => {
-            // Create a span wrapper for the piece text to animate
-            const piece = getPieceFromCell(cell);
-            const span = document.createElement('span');
-            span.textContent = piece;
-            span.style.display = 'inline-block';
-            span.style.animation = 'fadeOut 0.3s ease-out forwards';
-            
-            // Replace text content with span
-            setPieceInCell(cell, '');
-            cell.appendChild(span);
+    } else if (config.type === 'mcts' && app.modelState === 'loading') {
+        // The model's arrival calls onPositionChanged, which starts the AI again
+        setThinking(true);
+        return;
+    } else if (config.type === 'mcts' && app.modelState === 'ready') {
+        setThinking(true);
+        const job = client.search(app.game, { ...app.searchParams, sims: config.sims, progressMs: 200 }, (stats) => {
+            if (token === app.token) showSearchStats(stats);
         });
-        
-        // Remove pieces after animation completes
-        setTimeout(() => {
-            capturedCells.forEach(cell => {
-                // Remove the animated span and ensure cell is empty
-                const span = cell.querySelector('span');
-                if (span) span.remove();
-                setPieceInCell(cell, '');
-                cell.className = ''; // Clear all classes
-            });
-            
-            // Call callback after captures are complete
-            if (callback) callback();
-        }, 300); // Match fadeOut animation duration
-    } else {
-        // No captures, call callback immediately
-        if (callback) callback();
-    }
-}
-
-
-function showWinner(win_text) {
-    const overlay = document.getElementById('overlay');
-    const winMessage = document.getElementById('winMessage');
-
-    winMessage.textContent = `${win_text}`; // Set the message
-    overlay.classList.remove('hidden'); // Show the overlay
-}
-
-
-function checkForVictory(boardElement) {
-    let kingPresent = false;
-    let attackerCount = 0;
-
-    for (let row of boardElement.rows) {
-        for (let cell of row.cells) {
-            const piece = getPieceFromCell(cell);
-            
-            if (piece === '⬜') {
-                kingPresent = true;
-
-                // Check if king is on a corner
-                if (
-                    (cell.cellIndex === 0 && (row.rowIndex === 0 || row.rowIndex === 6)) ||
-                    (cell.cellIndex === 6 && (row.rowIndex === 0 || row.rowIndex === 6))
-                ) {
-                    gameOver=true;
-                    showWinner("Defenders Win! The king has reached a corner.");
-                    return -1;
-                }
-            } else if (piece === '⚫') {
-                attackerCount++;
-            }
+        let result = null;
+        try {
+            result = await job.promise;
+        } catch (error) {
+            console.error('[AI] Search failed:', error);
+            showStatus(`The AI's search failed: ${error.message}`, true);
+        }
+        if (token !== app.token) return;
+        if (result && (result.cancelled || result.stopped)) return;
+        if (result) {
+            showSearchStats(result.stats);
+            move = chooseMove(result.stats.children, app.temperature);
         }
     }
-
-    if (!kingPresent) {
-        gameOver=true;
-        showWinner("Attackers Win! The king has been captured.");
-        return 1;
-    } else if (attackerCount === 0) {
-        gameOver=true;
-        showWinner("Defenders Win! All attackers have been captured.");
-        return -1;
-    }
-    return 0;
+    if (token !== app.token) return;
+    setThinking(false);
+    if (move === null) move = fallbackMove();
+    if (move !== null) await playMove(move);
 }
 
-
-function getRandomLegalMove(boardElement, player) {
-    const pieces = [];
-    for (let row of boardElement.rows) {
-        for (let cell of row.cells) {
-            const piece = getPieceFromCell(cell);
-            if ((player === 'attacker' && piece === '⚫') || 
-                (player === 'defender' && (piece === '⚪' || piece === '⬜'))) {
-                pieces.push(cell);
-            }
-        }
-    }
-    const randomPiece = pieces[Math.floor(Math.random() * pieces.length)];
-
-    const legalMoves = [];
-    for (let row of boardElement.rows) {
-        for (let cell of row.cells) {
-            if (isValidMove(randomPiece, cell, boardElement)) {
-                legalMoves.push(cell);
-            }
-        }
-    }
-
-    if (legalMoves.length === 0) return null;  // No legal moves available
-    return {
-        piece: randomPiece,
-        target: legalMoves[Math.floor(Math.random() * legalMoves.length)]
-    };
-}
-
-const aiDifficultyRadioButtons = document.querySelectorAll('input[name="ai-difficulty"]');
-const aiTypeRadioButtons = document.querySelectorAll('input[name="ai-type"]');
-
-// Player configuration dropdowns
-const attackerTypeSelect = document.getElementById('attacker-type');
-const defenderTypeSelect = document.getElementById('defender-type');
-const attackerMctsDifficultyContainer = document.getElementById('attacker-mcts-difficulty-container');
-const defenderMctsDifficultyContainer = document.getElementById('defender-mcts-difficulty-container');
-const attackerMinimaxDifficultyContainer = document.getElementById('attacker-minimax-difficulty-container');
-const defenderMinimaxDifficultyContainer = document.getElementById('defender-minimax-difficulty-container');
-const attackerMctsSlider = document.getElementById('attacker-mcts-difficulty');
-const defenderMctsSlider = document.getElementById('defender-mcts-difficulty');
-const attackerMinimaxSlider = document.getElementById('attacker-minimax-difficulty');
-const defenderMinimaxSlider = document.getElementById('defender-minimax-difficulty');
-const attackerMctsValue = document.getElementById('attacker-mcts-value');
-const defenderMctsValue = document.getElementById('defender-mcts-value');
-const attackerMinimaxValue = document.getElementById('attacker-minimax-value');
-const defenderMinimaxValue = document.getElementById('defender-minimax-value');
-
-// Player configuration (stores type and difficulty for each player)
-const playerConfig = {
-    attacker: { type: 'human', mctsSimulations: 200, minimaxDepth: 4 },
-    defender: { type: 'human', mctsSimulations: 200, minimaxDepth: 4 }
-};
-
-// Show/hide difficulty sliders based on player type
-function updateDifficultyVisibility(player) {
-    const mctsContainer = player === 'attacker' ? attackerMctsDifficultyContainer : defenderMctsDifficultyContainer;
-    const minimaxContainer = player === 'attacker' ? attackerMinimaxDifficultyContainer : defenderMinimaxDifficultyContainer;
-    const type = playerConfig[player].type;
-    
-    if (type === 'human') {
-        mctsContainer.classList.add('hidden');
-        minimaxContainer.classList.add('hidden');
-    } else if (type === 'mcts') {
-        mctsContainer.classList.remove('hidden');
-        minimaxContainer.classList.add('hidden');
-    } else if (type === 'tree-search') {
-        mctsContainer.classList.add('hidden');
-        minimaxContainer.classList.remove('hidden');
-    }
-}
-
-// Handle attacker type change
-attackerTypeSelect.addEventListener('change', function() {
-    playerConfig.attacker.type = this.value;
-    updateDifficultyVisibility('attacker');
-    updateGameMode();
-});
-
-// Handle defender type change
-defenderTypeSelect.addEventListener('change', function() {
-    playerConfig.defender.type = this.value;
-    updateDifficultyVisibility('defender');
-    updateGameMode();
-});
-
-// Handle attacker MCTS slider change
-attackerMctsSlider.addEventListener('input', function() {
-    playerConfig.attacker.mctsSimulations = parseInt(this.value);
-    attackerMctsValue.textContent = this.value;
-});
-
-// Handle defender MCTS slider change
-defenderMctsSlider.addEventListener('input', function() {
-    playerConfig.defender.mctsSimulations = parseInt(this.value);
-    defenderMctsValue.textContent = this.value;
-});
-
-// Handle attacker Minimax slider change
-attackerMinimaxSlider.addEventListener('input', function() {
-    playerConfig.attacker.minimaxDepth = parseInt(this.value);
-    attackerMinimaxValue.textContent = this.value;
-});
-
-// Handle defender Minimax slider change
-defenderMinimaxSlider.addEventListener('input', function() {
-    playerConfig.defender.minimaxDepth = parseInt(this.value);
-    defenderMinimaxValue.textContent = this.value;
-});
-
-// Update game mode based on current selections
-function updateGameMode() {
-    gameMode.attacker = playerConfig.attacker.type === 'human' ? 'Human' : 'AI';
-    gameMode.defender = playerConfig.defender.type === 'human' ? 'Human' : 'AI';
-    updatePlayerRoles(gameMode.attacker, gameMode.defender);
-    
-    // If it's an AI's turn and the game is active, make the move
-    if (!gameOver && gameMode[currentPlayer] === 'AI') {
-        makeAIMove();
-    }
-}
-
-// Initialize visibility
-updateDifficultyVisibility('attacker');
-updateDifficultyVisibility('defender');
-
-function getAIType(player = null) {
-    // If player is specified, get their specific AI type
-    if (player) {
-        return playerConfig[player].type;
-    }
-    // Otherwise, get current player's type
-    return playerConfig[currentPlayer].type;
-}
-
-function getAIDifficulty(player = null) {
-    // This function now returns the appropriate difficulty based on AI type
-    const targetPlayer = player || currentPlayer;
-    const aiType = playerConfig[targetPlayer].type;
-    
-    if (aiType === 'mcts') {
-        return playerConfig[targetPlayer].mctsSimulations;
-    } else if (aiType === 'tree-search') {
-        return playerConfig[targetPlayer].minimaxDepth;
-    }
-    return 200; // Default fallback
-}
-
-function getAIBestMove(boardElement, player_str) {
-    // For tree-search AI, difficulty is the depth directly
-    const max_depth = getAIDifficulty();
-
-    let player = player_str === 'attacker'? 1 : -1;
-    let board_arr = [];
-    for (let row of boardElement.rows) {
-        for (let cell of row.cells) {
-            const piece = getPieceFromCell(cell);
-            if(piece === '⚫')
-                board_arr.push(1);
-            else if(piece === '⚪')
-                board_arr.push(2);
-            else if(piece === '⬜')
-                board_arr.push(3);
-            else
-                board_arr.push(0);
-        }
-    }
-    let size = board_arr.length;
-
-    let ptr_eval = Module._malloc(4);
-    let ptr_movefrom_x = Module._malloc(4);
-    let ptr_movefrom_y = Module._malloc(4);
-    let ptr_moveto_x = Module._malloc(4);
-    let ptr_moveto_y = Module._malloc(4);
-    let board_ptr = Module._malloc(size * 4);
-    let board_dataHeap = new Int32Array(Module.HEAP32.buffer, board_ptr, size);
-    board_dataHeap.set(board_arr);
-
-    // Call the C++ function
-    Module._AI_web_get_move(ptr_eval, ptr_movefrom_x, ptr_movefrom_y, ptr_moveto_x, ptr_moveto_y, board_ptr, player, max_depth);
-    computer_eval = new Float32Array(Module.HEAP32.buffer, ptr_eval, 1)[0];
-    let movefrom_x = new Int32Array(Module.HEAP32.buffer, ptr_movefrom_x, 1)[0];
-    let movefrom_y = new Int32Array(Module.HEAP32.buffer, ptr_movefrom_y, 1)[0];
-    let moveto_x = new Int32Array(Module.HEAP32.buffer, ptr_moveto_x, 1)[0];
-    let moveto_y = new Int32Array(Module.HEAP32.buffer, ptr_moveto_y, 1)[0];
-
-    console.log(computer_eval);
-    
-    // Don't update eval display here - it's handled by updateEvaluation()
-    // The computer_eval variable is used by updateEvaluation when evalMode === 'heuristic'
-
-    return {
-        piece: boardElement.rows[movefrom_y].cells[movefrom_x],
-        target: boardElement.rows[moveto_y].cells[moveto_x]
-    };
-}
-
-async function getMCTSBestMove(boardElement, player_str) {
-    console.log(`[Script] getMCTSBestMove called for ${player_str}`);
-    
-    // For MCTS AI, difficulty is the simulation count directly
-    const simCount = getAIDifficulty();
-    
-    console.log(`[Script] MCTS simulations: ${simCount}, temperature: ${mctsTemperature}`);
-    
-    const agent = getMCTSAgent();
-    
-    if (!agent.isReady) {
-        console.error("[Script] MCTS agent not ready!");
-        // Fall back to tree search AI
-        console.log("[Script] Falling back to tree-search AI");
-        return getAIBestMove(boardElement, player_str);
-    }
-    
-    try {
-        // Always do a fresh search for AI moves (don't use cache)
-        console.log("[Script] Running fresh MCTS search for AI move");
-        const move = await agent.getBestMove(boardElement, player_str, simCount, mctsTemperature);
-        
-        if (move && move.piece && move.target) {
-            console.log("[Script] MCTS returned move:", move);
+/** A move when the chosen AI cannot play: Minimax on 7x7 if it gives a legal move, else random. */
+function fallbackMove() {
+    const legal = app.game.legalMoves();
+    if (legal.length === 0) return null;
+    if (app.size === 7 && cppReady) {
+        const { move } = runMinimax(app.game, 3);
+        if (app.game.isLegalMove(move)) {
+            showStatus('No network available: the AI plays with Minimax instead.', true);
             return move;
-        } else {
-            console.error("[Script] MCTS returned invalid move");
-            return getAIBestMove(boardElement, player_str);
-        }
-    } catch (error) {
-        console.error("[Script] Error in getMCTSBestMove:", error);
-        // Fall back to tree search AI
-        return getAIBestMove(boardElement, player_str);
-    }
-}
-
-function highlightLegalMoves(source, boardElement) {
-    // Reset all highlights
-    for (let row of boardElement.rows) {
-        for (let cell of row.cells) {
-            cell.classList.remove('legal-move');
         }
     }
+    showStatus('No network available: the AI plays random moves.', true);
+    return legal[Math.floor(Math.random() * legal.length)];
+}
 
-    const sourceRow = source.parentNode.rowIndex;
-    const sourceCol = source.cellIndex;
-
-    // Check horizontally and vertically
-    for (let i = 0; i < 7; i++) {
-        let hCell = boardElement.rows[sourceRow].cells[i];
-        let vCell = boardElement.rows[i].cells[sourceCol];
-        if (isValidMove(source, hCell, boardElement)) {
-            hCell.classList.add('legal-move');
-        }
-
-        if (isValidMove(source, vCell, boardElement)) {
-            vCell.classList.add('legal-move');
-        }
+/** Make a move on the board; `slide` animates the piece to its square (not after a drag and drop). */
+async function playMove(move, { slide = true } = {}) {
+    if (app.animating || app.game.gameOver) return;
+    const epoch = app.epoch;
+    app.animating = true;
+    invalidate();
+    app.selected = -1;
+    clearSuggestions();
+    render();
+    const from = moveFrom(move), to = moveTo(move);
+    if (slide) await slidePiece(from, to, PIECE_GLYPHS[app.game.board[from]]);
+    if (epoch !== app.epoch) return;
+    app.history.push({ game: app.game.clone(), lastMove: app.lastMove });
+    const before = app.game.board.slice();
+    const captured = app.game.makeMove(move);
+    app.lastMove = move;
+    render();
+    flashLastMove();
+    if (captured.length) {
+        await fadeOutPieces(captured.map(sq => [sq, PIECE_GLYPHS[before[sq]]]));
+        if (epoch !== app.epoch) return;
     }
+    app.animating = false;
+    onPositionChanged();
 }
 
-function deselectAll(boardElement) {
-    const cells = boardElement.querySelectorAll('td');
-    cells.forEach(cell => {
-        cell.classList.remove('selected');
-        cell.blur(); // Clear focus state on mobile
-    });
+function undo() {
+    if (app.history.length === 0) return;
+    app.epoch++;
+    app.animating = false;
+    removeFloatingPieces();
+    // Go back to the last position where a human was to move (unless nobody is human)
+    const anyHuman = SIDES.some(s => app.players[s].type === 'human');
+    do {
+        const entry = app.history.pop();
+        app.game = entry.game;
+        app.lastMove = entry.lastMove;
+    } while (app.history.length && anyHuman && app.players[currentSide()].type !== 'human');
+    flashLastMove();
+    onPositionChanged();
 }
 
-function resetBoard() {
-    gameOver = false;
-    
-    // Reset position history
-    positionHistory = [];
-    
-    // Reset move history
-    moveHistory = [];
+// ----------------------------------------------------------------------------------------------
+// Board display and input
+// ----------------------------------------------------------------------------------------------
 
-    // Remove the "win" overlay.
-    const overlay = document.getElementById('overlay');
-    overlay.classList.add('hidden'); // Show the overlay
-
-
-    // Clear the current board content
-    boardElement.innerHTML = '';
-
-    const initialSetup = [
-        ['0', '0', '0', '⚫', '0', '0', '0'],
-        ['0', '0', '0', '⚫', '0', '0', '0'],
-        ['0', '0', '0', '⚪', '0', '0', '0'],
-        ['⚫', '⚫', '⚪', '⬜', '⚪', '⚫', '⚫'],
-        ['0', '0', '0', '⚪', '0', '0', '0'],
-        ['0', '0', '0', '⚫', '0', '0', '0'],
-        ['0', '0', '0', '⚫', '0', '0', '0']
-    ];
-
-    for (let row of initialSetup) {
+function buildBoard() {
+    const N = app.size;
+    const { isCorner, throne } = Tafl.geometry(N);
+    boardTable.style.setProperty('--n', N);
+    boardEl.innerHTML = '';
+    app.cells = [];
+    for (let r = 0; r < N; r++) {
         const tr = document.createElement('tr');
-        for (let cell of row) {
+        for (let c = 0; c < N; c++) {
+            const sq = r * N + c;
             const td = document.createElement('td');
-            if (cell !== '0') {
-                td.innerText = cell;
-                td.classList.add(cell); // Add class to td (e.g., "A", "D", "K")
-            }
-            // Attach the click event to the cell
-            td.addEventListener('click', handleCellClick);
-
+            td.dataset.sq = sq;
+            td.classList.add((r + c) % 2 === 0 ? 'light' : 'dark');
+            if (isCorner[sq]) td.classList.add('corner');
+            if (sq === throne && app.rules.throneEnabled) td.classList.add('throne');
+            td.title = Tafl.squareName(N, sq);
+            const piece = document.createElement('span');
+            piece.className = 'piece';
+            td.appendChild(piece);
             tr.appendChild(td);
+            app.cells.push({ td, piece });
         }
-        boardElement.appendChild(tr);
-    }
-
-    boardElement.className = "attacker";
-    
-    // Record the initial position
-    recordPosition(boardElement, 'attacker');
-    
-    // Save initial board state for undo
-    saveBoardState();
-    
-    // Refresh eval and policy visualizations if they were active
-    if (evalMode !== 'off') {
-        updateEvaluation();
-    }
-    if (policyMode !== 'off') {
-        updatePolicyVisualization();
+        boardEl.appendChild(tr);
     }
 }
 
-function movePiece(sourceCell, targetCell) {
-    // Get the piece before we start animations
-    const piece = getPieceFromCell(sourceCell);
-    
-    // Force a layout flush to ensure positions are up-to-date (helps with mobile)
-    // This is especially important when called from AI after visualization updates
-    sourceCell.offsetHeight;  // Force reflow
-    
-    // Don't flash cells - removed for cleaner animation
-    // sourceCell.classList.add('flash-animation');
-    // targetCell.classList.add('flash-animation');
-    
-    // Create a floating piece element for animation
-    const sourceRect = sourceCell.getBoundingClientRect();
-    const targetRect = targetCell.getBoundingClientRect();
-    
-    const floatingPiece = document.createElement('div');
-    floatingPiece.textContent = piece;
-    floatingPiece.style.position = 'fixed';
-    floatingPiece.style.left = sourceRect.left + 'px';
-    floatingPiece.style.top = sourceRect.top + 'px';
-    floatingPiece.style.width = sourceRect.width + 'px';
-    floatingPiece.style.height = sourceRect.height + 'px';
-    floatingPiece.style.fontSize = window.getComputedStyle(sourceCell).fontSize;
-    floatingPiece.style.display = 'flex';
-    floatingPiece.style.alignItems = 'center';
-    floatingPiece.style.justifyContent = 'center';
-    floatingPiece.style.pointerEvents = 'none';
-    floatingPiece.style.zIndex = '1000';
-    floatingPiece.style.transition = 'all 0.5s ease-in-out';
-    
-    document.body.appendChild(floatingPiece);
-    
-    // Clear the source cell immediately (but keep the class for background highlighting)
-    setPieceInCell(sourceCell, '');
-    
-    // Use double requestAnimationFrame to ensure browser has painted
-    // This is crucial for mobile devices
-    requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-            floatingPiece.style.left = targetRect.left + 'px';
-            floatingPiece.style.top = targetRect.top + 'px';
-        });
-    });
-    
-    // After animation completes
-    setTimeout(() => {
-        // Remove floating piece
-        floatingPiece.remove();
-        
-        // Move the piece to the new cell
-        setPieceInCell(targetCell, piece);
-        
-        // Clear class of source and destination (including 'selected')
-        sourceCell.className = '';
-        targetCell.className = '';
-        
-        // Add appropriate class to the destination
-        targetCell.classList.add(piece);
-        
-        // Explicitly remove 'selected' from both cells to be absolutely sure
-        sourceCell.classList.remove('selected');
-        targetCell.classList.remove('selected');
-        
-        // Clear any selection globally
-        deselectAll(boardElement);
-        selectedPiece = null;
-        
-        // Remove flash animation (if any were added)
-        sourceCell.classList.remove('flash-animation');
-        targetCell.classList.remove('flash-animation');
-        
-        // Capture pieces (with their own animations)
-        // Use callback to record position and update visualizations after captures are complete
-        capturePieces(sourceCell, targetCell, boardElement, () => {
-            // Record the position after the move and captures are complete
-            recordPosition(boardElement, currentPlayer);
-            
-            // NOW it's safe to update visualizations (captures are done)
-            // Clear legal move highlights
-            for (let row of boardElement.rows) {
-                for (let cell of row.cells) {
-                    cell.classList.remove('legal-move');
-                }
-            }
-            
-            let win = checkForVictory(boardElement);
-            if(win !== 0){
-                return;
-            }
-
-            // Switch turns
-            togglePlayer();
-            
-            // Save board state after turn has switched (for undo)
-            // This saves the board with the next player's turn
-            saveBoardState();
-            
-            if ((gameMode[currentPlayer] === 'AI') && (!gameOver)) {
-                // Update visualizations first, THEN start AI move
-                // This ensures the human player's position evaluation is displayed
-                // before the AI starts thinking
-                // Small delay to ensure UI updates have painted
-                setTimeout(async () => {
-                    if (policyMode !== 'off') {
-                        updatePolicyVisualization();
-                    }
-                    if (evalMode !== 'off') {
-                        await updateEvaluation();
-                    }
-                    // Start AI move after visualizations are updated
-                    makeAIMove();
-                }, 50);
-            } else {
-                // Update visualizations after human moves
-                if (policyMode !== 'off') {
-                    updatePolicyVisualization();
-                }
-                if (evalMode !== 'off') {
-                    updateEvaluation();
-                }
-            }
-        });
-    }, 500); // Match transition duration (doubled from 250ms)
+function render() {
+    const g = app.game;
+    const targets = new Set(app.selected >= 0 ? g.legalMovesFrom(app.selected).map(moveTo) : []);
+    for (let sq = 0; sq < app.cells.length; sq++) {
+        const { td, piece } = app.cells[sq];
+        const p = g.board[sq];
+        piece.textContent = PIECE_GLYPHS[p] || '';
+        td.classList.toggle('attacker', p === ATTACKER);
+        td.classList.toggle('defender', p === DEFENDER);
+        td.classList.toggle('king', p === KING);
+        td.classList.toggle('selected', sq === app.selected);
+        td.classList.toggle('legal-move', targets.has(sq));
+    }
+    boardEl.className = currentSide() + (isAITurn() ? ' ai-turn' : '');
 }
 
+/** Light up the two squares of the last move; the highlight fades out by itself (styles.css). */
+function flashLastMove() {
+    for (const { td } of app.cells) td.classList.remove('last-move');
+    if (app.lastMove === null) return;
+    // Force a style recalculation, so a square that had the highlight already starts it again
+    void boardEl.offsetWidth;
+    app.cells[moveFrom(app.lastMove)].td.classList.add('last-move');
+    app.cells[moveTo(app.lastMove)].td.classList.add('last-move');
+}
 
-function makeAIMove() {
-    if (gameOver || gameMode[currentPlayer] !== 'AI') {
-        return;
-    }
-    // clearTimeout(aiMoveTimeout); // Clear any existing scheduled AI move
-    // aiMoveTimeout = setTimeout(() => {  // Add a delay for better user experience
-    //     const move = getRandomLegalMove(boardElement, currentPlayer);
-    //     if (move) {
-        //         movePiece(move.piece, move.target);
-    //     }
-    // }, 500);
-
-    clearTimeout(aiMoveTimeout); // Clear any existing scheduled AI move
-    
-    const aiType = getAIType();
-    console.log(`[Script] makeAIMove called, AI type: ${aiType}, player: ${currentPlayer}`);
-    
-    if (aiType === 'mcts') {
-        // Use MCTS AI (async) - no delay since MCTS now yields to browser
-        (async () => {
-            // Check if game is still active before executing move
-            if (gameOver || gameMode[currentPlayer] !== 'AI') {
-                console.log("[Script] Game over or player changed, canceling MCTS move");
-                return;
-            }
-            console.log("[Script] Making MCTS move...");
-            
-            // Show AI thinking indicator next to player label
-            setAIThinking(true);
-            
-            const move = await getMCTSBestMove(boardElement, currentPlayer);
-            
-            // Clear AI thinking indicator
-            setAIThinking(false);
-            // Check once more after async operation
-            if (gameOver) {
-                console.log("[Script] Game over after MCTS calculation, canceling move");
-                return;
-            }
-            if (move) {
-                console.log("[Script] Executing MCTS move");
-                movePiece(move.piece, move.target);
-            } else {
-                console.error("[Script] No move returned from MCTS");
-            }
-        })();
-    } else {
-        // Use tree-search AI (synchronous C++ code - will block)
-        // No delay needed, but note this will freeze the UI during calculation
-        if (gameOver || gameMode[currentPlayer] !== 'AI') {
-            console.log("[Script] Game over or player changed, canceling tree-search move");
+function onCellClick(sq) {
+    const g = app.game;
+    if (app.animating || g.gameOver || isAITurn()) return;
+    if (app.selected >= 0 && sq !== app.selected && !g.isOwnPiece(sq)) {
+        const move = encodeMove(app.selected, sq);
+        if (g.isLegalMove(move)) {
+            playMove(move);
             return;
         }
-        console.log("[Script] Making tree-search move...");
-        
-        // Show AI thinking indicator (won't animate due to blocking)
-        setAIThinking(true);
-        
-        const move = getAIBestMove(boardElement, currentPlayer);
-        
-        // Clear AI thinking indicator
-        setAIThinking(false);
-        if (gameOver) {
-            console.log("[Script] Game over after tree-search calculation, canceling move");
-            return;
-        }
-        if (move) {
-            console.log("[Script] Executing tree-search move");
-            movePiece(move.piece, move.target);
-        }
+        explainIllegalMove(move);
+    }
+    app.selected = (sq !== app.selected && g.isOwnPiece(sq)) ? sq : -1;
+    render();
+    renderSuggestions();
+}
+
+/** Tell the player when a move is refused only because of the repetition rule (the rule nobody expects). */
+function explainIllegalMove(move) {
+    if (app.game.isBlockedByRepetition(move)) {
+        showStatus('Not allowed: that move would create the same position for the third time.', false, 4000);
     }
 }
 
-function togglePlayer() {
-    if (currentPlayer === 'attacker') {
-        currentPlayer = 'defender';
-        boardElement.className = 'defender';
-    } else {
-        currentPlayer = 'attacker';
-        boardElement.className = 'attacker';
-    }
+// --- Board input through pointer events, the same for mouse, touch and pen. A press that moves
+// less than a few pixels is a click (onCellClick); a press on an own piece that moves further drags
+// it. The page does not rely on the browser's click events, which touch screens may delay or drop.
 
-    // Add ai-turn class if current player is AI
-    if (gameMode[currentPlayer] === 'AI') {
-        boardElement.classList.add('ai-turn');
-    } else {
-        boardElement.classList.remove('ai-turn');
-    }
+const DRAG_THRESHOLD_PX = 6;
+let press = null;  // {pointerId, sq, x, y, token, canDrag, moved, dragging, ghost, size, over}
 
-    // Clear all cell highlighting and selections immediately
-    deselectAll(boardElement);
-    removeHighlights(boardElement);
-    selectedPiece = null;
-    
-    // Extra safety: force remove 'selected' class from ALL cells
-    const allCells = boardElement.querySelectorAll('td');
-    allCells.forEach(cell => cell.classList.remove('selected'));
-
-    // Highlight the text of whoever has the turn:
-    const attackerLabel = document.getElementById("attacker-label");
-    const defenderLabel = document.getElementById("defender-label");
-    
-    if (currentPlayer === 'attacker') {
-        attackerLabel.classList.add('active-player');
-        defenderLabel.classList.remove('active-player');
-    } else {
-        defenderLabel.classList.add('active-player');
-        attackerLabel.classList.remove('active-player');
-    }
-    
-    // Clear cache for new position
-    clearMCTSCache();
-    
-    // Don't refresh visualizations here - they will be refreshed after animations complete
-    // This prevents MCTS from blocking animations
+function squareAt(x, y) {
+    const el = document.elementFromPoint(x, y);
+    const td = el && el.closest('#board td');
+    return td ? Number(td.dataset.sq) : -1;
 }
 
-let gameOver = false;
-let currentPlayer = 'attacker';
-const gameMode = {
-    attacker: 'Human',
-    defender: 'Human'
-};
-let aiMoveTimeout = null;
-let selectedPiece = null;
-let computer_eval = 0.0;
-let positionHistory = []; // Track position history for three-fold repetition
-let moveHistory = []; // Track moves for undo functionality
-
-/**
- * Save current board state for undo
- */
-function saveBoardState() {
-    const state = {
-        board: [],
-        player: currentPlayer,
-        positionHistoryLength: positionHistory.length
+function onPointerDown(event) {
+    if (press || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    const td = event.target.closest('td');
+    if (!td) return;
+    const sq = Number(td.dataset.sq);
+    press = {
+        pointerId: event.pointerId, sq, x: event.clientX, y: event.clientY, token: app.token,
+        canDrag: !app.animating && !app.game.gameOver && !isAITurn() && app.game.isOwnPiece(sq),
+        moved: false, dragging: false, ghost: null, size: 0, over: -1,
     };
-    
-    for (let row of boardElement.rows) {
-        const rowData = [];
-        for (let cell of row.cells) {
-            rowData.push(getPieceFromCell(cell));
-        }
-        state.board.push(rowData);
-    }
-    
-    moveHistory.push(state);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
 }
 
-/**
- * Restore board state from history
- */
-function restoreBoardState(state) {
-    // Restore board
-    for (let i = 0; i < state.board.length; i++) {
-        for (let j = 0; j < state.board[i].length; j++) {
-            const cell = boardElement.rows[i].cells[j];
-            const piece = state.board[i][j];
-            setPieceInCell(cell, piece);
-            
-            // Update cell class
-            cell.className = '';
-            if (piece) {
-                cell.classList.add(piece);
-            }
-        }
+function onPointerMove(event) {
+    if (!press || event.pointerId !== press.pointerId) return;
+    if (!press.dragging) {
+        if (Math.hypot(event.clientX - press.x, event.clientY - press.y) < DRAG_THRESHOLD_PX) return;
+        press.moved = true;
+        if (!press.canDrag || press.token !== app.token || app.animating) return;
+        startDrag(event);
     }
-    
-    // Restore player
-    currentPlayer = state.player;
-    boardElement.className = currentPlayer;
-    
-    // Update player labels
-    const attackerLabel = document.getElementById("attacker-label");
-    const defenderLabel = document.getElementById("defender-label");
-    
-    if (currentPlayer === 'attacker') {
-        attackerLabel.classList.add('active-player');
-        defenderLabel.classList.remove('active-player');
-    } else {
-        defenderLabel.classList.add('active-player');
-        attackerLabel.classList.remove('active-player');
-    }
-    
-    // Restore position history
-    positionHistory = positionHistory.slice(0, state.positionHistoryLength);
-    
-    // Clear any selections
-    if (selectedPiece) {
-        selectedPiece.classList.remove('selected');
-        selectedPiece = null;
-    }
-    removeHighlights(boardElement);
-    
-    // Clear cache
-    clearMCTSCache();
-    
-    // Refresh visualizations
-    if (policyMode !== 'off') {
-        updatePolicyVisualization();
-    }
-    if (evalMode !== 'off') {
-        updateEvaluation();
+    press.ghost.style.left = `${event.clientX - press.size / 2}px`;
+    press.ghost.style.top = `${event.clientY - press.size / 2}px`;
+    // Mark the square under the pointer when the piece may go there
+    const sq = squareAt(event.clientX, event.clientY);
+    const over = sq >= 0 && app.game.isLegalMove(encodeMove(press.sq, sq)) ? sq : -1;
+    if (over !== press.over) {
+        if (press.over >= 0) app.cells[press.over].td.classList.remove('drag-over');
+        if (over >= 0) app.cells[over].td.classList.add('drag-over');
+        press.over = over;
     }
 }
 
-function startGame(attackerMode, defenderMode) {
-    resetBoard();
-    currentPlayer = 'attacker';
-    gameMode = { attacker: attackerMode, defender: defenderMode };
-    positionHistory = []; // Reset position history
-    moveHistory = []; // Reset move history
-    if (gameMode[currentPlayer] === 'AI') {
-        makeAIMove();
-    }
+function startDrag(event) {
+    press.dragging = true;
+    const { td } = app.cells[press.sq];
+    // Keep receiving this pointer's events wherever it goes
+    try { td.setPointerCapture(event.pointerId); } catch (e) { /* the window listeners still work */ }
+    app.selected = press.sq;
+    render();
+    renderSuggestions();
+    td.classList.add('drag-source');
+    document.body.classList.add('dragging');
+    const rect = td.getBoundingClientRect();
+    press.size = rect.width;
+    const ghost = document.createElement('div');
+    ghost.className = 'moving-piece dragged-piece';
+    ghost.textContent = PIECE_GLYPHS[app.game.board[press.sq]];
+    Object.assign(ghost.style, {
+        width: `${rect.width}px`, height: `${rect.height}px`, fontSize: getComputedStyle(td).fontSize,
+    });
+    document.body.appendChild(ghost);
+    press.ghost = ghost;
 }
 
-// Event listener for piece selection or movement
-function handleCellClick(event) {
-    if (gameOver) return;
-    
-    // Don't allow piece selection if current player is AI
-    if (gameMode[currentPlayer] === 'AI') {
+function onPointerUp(event) {
+    if (!press || event.pointerId !== press.pointerId) return;
+    const { sq: from, moved, dragging, token } = press;
+    const to = dragging ? squareAt(event.clientX, event.clientY) : -1;
+    endPress();
+    if (!dragging) {
+        if (!moved) onCellClick(from);
         return;
     }
-    
-    // Get the td cell, even if clicking on child elements (like policy overlay)
-    let cell = event.target;
-    if (cell.tagName !== 'TD') {
-        cell = cell.closest('td');
+    const move = encodeMove(from, to);
+    if (to >= 0 && token === app.token && !app.animating) {
+        if (app.game.isLegalMove(move)) {
+            playMove(move, { slide: false });
+            return;
+        }
+        if (to !== from) explainIllegalMove(move);
     }
-    if (!cell) return;
-    
-    const piece = getPieceFromCell(cell);
-    
-    // If a piece is already selected
-    if (selectedPiece) {
-        // If trying to replace an existing piece, check if it's the same piece to deselect
-        if (cell === selectedPiece) {
-            removeHighlights(boardElement); // Remove any move highlights
-            cell.classList.remove('selected');  // Remove the 'selected' class
-            selectedPiece = null;
-            
-            // Update policy visualization to show all pieces
-            if (policyMode !== 'off') {
-                updatePolicyVisualization();
-            }
-            return;
-        }
+    // Dropped elsewhere: the piece goes back and stays selected, so a click can still move it
+    render();
+    renderSuggestions();
+}
 
-        // If trying to select another piece of the same player
-        if (currentPlayer === 'attacker' && piece === '⚫') {
-            removeHighlights(boardElement); // Remove any move highlights
-            deselectAll(boardElement);
-            cell.classList.add('selected');  // Add the 'selected' class
-            highlightLegalMoves(cell, boardElement);
-            selectedPiece = cell;
-            
-            // Update policy visualization for this piece
-            if (policyMode !== 'off') {
-                updatePolicyVisualization();
-            }
-            return;
-        } else if (currentPlayer === 'defender' && isDefender(piece)) {
-            removeHighlights(boardElement); // Remove any move highlights
-            deselectAll(boardElement);
-            cell.classList.add('selected');  // Add the 'selected' class
-            highlightLegalMoves(cell, boardElement);
-            selectedPiece = cell;
-            
-            // Update policy visualization for this piece
-            if (policyMode !== 'off') {
-                updatePolicyVisualization();
-            }
-            return;
-        }
-
-        // If making a move to an empty square
-        if (!piece) {
-            if (!isValidMove(selectedPiece, cell, boardElement)) {
-                // Clicked on an illegal square - deselect the piece
-                removeHighlights(boardElement);
-                selectedPiece.classList.remove('selected');
-                selectedPiece = null;
-                
-                // Update policy visualization to show all pieces
-                if (policyMode !== 'off') {
-                    updatePolicyVisualization();
-                }
-                return;
-            }
-            movePiece(selectedPiece, cell);
-            removeHighlights(boardElement); // Remove move highlights after moving
-            selectedPiece.classList.remove('selected');  // Remove the 'selected' class
-            selectedPiece = null;
-            
-            // Clear MCTS cache after move
-            clearMCTSCache();
-            if (policyMode !== 'off') {
-                clearPolicyVisualization();
-            }
-            return;
-        }
-    }
-
-    // If a piece is not selected and the clicked cell has a piece
-    if (currentPlayer === 'attacker' && piece === '⚫') {
-        selectedPiece = cell; // Mark the piece as selected
-        highlightLegalMoves(cell, boardElement);        
-        cell.classList.add('selected');  // Add the 'selected' class
-        
-        // Update policy visualization for this piece
-        if (policyMode !== 'off') {
-            updatePolicyVisualization();
-        }
-    } else if (currentPlayer === 'defender' && isDefender(piece)) {
-        highlightLegalMoves(cell, boardElement);    
-        selectedPiece = cell; // Mark the piece as selected
-        cell.classList.add('selected');  // Add the 'selected' class
-        
-        // Update policy visualization for this piece
-        if (policyMode !== 'off') {
-            updatePolicyVisualization();
-        }
+function onPointerCancel(event) {
+    if (press && event.pointerId === press.pointerId) {
+        endPress();
+        render();
     }
 }
-function removeHighlights(boardElement) {
-    const cells = boardElement.querySelectorAll('td');
-    cells.forEach(cell => {
-        // Adjust this depending on how you're indicating a legal move. 
-        // Here, I'm assuming a CSS class "highlight" is added to show legal moves.
-        cell.classList.remove('legal-move'); 
+
+function endPress() {
+    if (!press) return;
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+    window.removeEventListener('pointercancel', onPointerCancel);
+    if (press.ghost) press.ghost.remove();
+    boardEl.querySelectorAll('.drag-source, .drag-over').forEach(td => td.classList.remove('drag-source', 'drag-over'));
+    document.body.classList.remove('dragging');
+    press = null;
+}
+
+function cellRect(sq) {
+    return app.cells[sq].td.getBoundingClientRect();
+}
+
+function slidePiece(from, to, glyph) {
+    return new Promise((resolve) => {
+        const a = cellRect(from), b = cellRect(to);
+        const floating = document.createElement('div');
+        floating.className = 'moving-piece';
+        floating.textContent = glyph;
+        Object.assign(floating.style, {
+            left: `${a.left}px`, top: `${a.top}px`, width: `${a.width}px`, height: `${a.height}px`,
+            fontSize: getComputedStyle(app.cells[from].td).fontSize,
+        });
+        document.body.appendChild(floating);
+        app.cells[from].piece.textContent = '';
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            floating.style.left = `${b.left}px`;
+            floating.style.top = `${b.top}px`;
+        }));
+        setTimeout(() => {
+            floating.remove();
+            resolve();
+        }, SLIDE_MS);
     });
 }
 
-function updatePlayerRoles(attackerType, defenderType) {
-    const attackerLabel = document.getElementById("attacker-label");
-    const defenderLabel = document.getElementById("defender-label");
-
-    attackerLabel.innerHTML = `Attacker:<br>${attackerType}`;
-    defenderLabel.innerHTML = `Defender:<br>${defenderType}`;
+function fadeOutPieces(list) {
+    const spans = list.map(([sq, glyph]) => {
+        const span = document.createElement('span');
+        span.className = 'piece fading';
+        span.textContent = glyph;
+        app.cells[sq].td.appendChild(span);
+        return span;
+    });
+    return new Promise((resolve) => setTimeout(() => {
+        spans.forEach(s => s.remove());
+        resolve();
+    }, FADE_MS));
 }
 
-
-function resetGame() {
-    updatePlayerRoles(gameMode["attacker"], gameMode["defender"]);
-    clearTimeout(aiMoveTimeout);
-    resetBoard();
-    currentPlayer = 'attacker';
-    if (gameMode[currentPlayer] === 'AI'){
-        makeAIMove();
-    }
+function removeFloatingPieces() {
+    endPress();
+    document.querySelectorAll('.moving-piece, #board .piece.fading').forEach(el => el.remove());
 }
 
-document.getElementById('help-btn').addEventListener('click', function() {
-    var helpText = document.getElementById('helpText');
-    var settingsText = document.getElementById('settingsText');
-    
-    // Close settings if open
-    if (!settingsText.classList.contains('hidden')) {
-        settingsText.classList.add('hidden');
-    }
-    
-    // Toggle help
-    if (helpText.classList.contains('hidden')) {
-        helpText.classList.remove('hidden');
-    } else {
-        helpText.classList.add('hidden');
-    }
-});
+// Time for the browser to paint (a timer, not requestAnimationFrame, which stops in background tabs)
+const nextPaint = () => new Promise(resolve => setTimeout(resolve, 30));
 
-// Settings button
-document.getElementById('settings-btn').addEventListener('click', function() {
-    var helpText = document.getElementById('helpText');
-    var settingsText = document.getElementById('settingsText');
-    
-    // Close help if open
-    if (!helpText.classList.contains('hidden')) {
-        helpText.classList.add('hidden');
-    }
-    
-    // Toggle settings
-    if (settingsText.classList.contains('hidden')) {
-        settingsText.classList.remove('hidden');
-    } else {
-        settingsText.classList.add('hidden');
-    }
-});
-
-// Temperature slider
-document.getElementById('temperature-slider').addEventListener('input', function() {
-    mctsTemperature = parseFloat(this.value);
-    document.getElementById('temperature-value').textContent = mctsTemperature.toFixed(1);
-    console.log(`[Settings] Temperature set to ${mctsTemperature}`);
-    
-    // Clear cache when temperature changes (affects move selection in MCTS)
-    clearMCTSCache();
-    
-    // Update visualizations if they're active
-    if (policyMode !== 'off') {
-        updatePolicyVisualization();
-    }
-});
-
-// FPU Reduction slider
-document.getElementById('fpu-reduction-slider').addEventListener('input', function() {
-    mctsFpuReduction = parseFloat(this.value);
-    window.mctsFpuReduction = mctsFpuReduction;
-    document.getElementById('fpu-reduction-value').textContent = mctsFpuReduction.toFixed(2);
-    console.log(`[Settings] FPU reduction set to ${mctsFpuReduction}`);
-    
-    // Clear cache when FPU changes (affects tree search behavior)
-    clearMCTSCache();
-    
-    // Update visualizations if they're active
-    if (policyMode !== 'off') {
-        updatePolicyVisualization();
-    }
-    if (evalMode !== 'off') {
-        updateEvaluation();
-    }
-});
-
-// C_puct slider
-document.getElementById('cpuct-slider').addEventListener('input', function() {
-    mctsCPuct = parseFloat(this.value);
-    window.mctsCPuct = mctsCPuct;
-    document.getElementById('cpuct-value').textContent = mctsCPuct.toFixed(2);
-    console.log(`[Settings] C_puct set to ${mctsCPuct}`);
-    
-    // Clear cache when c_puct changes (affects exploration/exploitation balance)
-    clearMCTSCache();
-    
-    // Update visualizations if they're active
-    if (policyMode !== 'off') {
-        updatePolicyVisualization();
-    }
-    if (evalMode !== 'off') {
-        updateEvaluation();
-    }
-});
-
-// Continuous eval toggle
-document.getElementById('continuous-eval-toggle').addEventListener('change', function() {
-    continuousEvalEnabled = this.checked;
-    console.log(`[Settings] Continuous eval ${continuousEvalEnabled ? 'enabled' : 'disabled'}`);
-    
-    if (continuousEvalEnabled) {
-        // Start continuous evaluation
-        startContinuousEval();
-    } else {
-        // Stop continuous evaluation
-        stopContinuousEval();
-    }
-});
-
-// Model selector - populate with available ONNX models
-async function populateModelSelector() {
-    const modelSelect = document.getElementById('model-select');
-    
-    // List of known models (fallback)
-    let knownModels = [
-        'checkpoint_SE_32x6_iter_204.onnx',
-    ];
-    
-    try {
-        // Try to fetch models list from JSON file
-        const response = await fetch('list_models.json');
-        if (response.ok) {
-            const data = await response.json();
-            if (data.models && Array.isArray(data.models) && data.models.length > 0) {
-                knownModels = data.models;
-                console.log('[Settings] Loaded models from list_models.json');
-            }
-        }
-    } catch (error) {
-        console.log('[Settings] Could not load list_models.json, using fallback');
-    }
-    
-    // Try directory listing as alternative (only works if server has directory listing enabled)
-    try {
-        const response = await fetch('checkpoints/', { method: 'HEAD' });
-        // Only try to parse if directory listing is available
-        if (response.ok) {
-            const textResponse = await fetch('checkpoints/');
-            const text = await textResponse.text();
-            
-            // Parse HTML to find .onnx files
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(text, 'text/html');
-            const links = doc.querySelectorAll('a');
-            
-            const onnxFiles = [];
-            for (const link of links) {
-                const href = link.getAttribute('href');
-                if (href && href.endsWith('.onnx')) {
-                    // Remove any path prefix
-                    const fileName = href.split('/').pop();
-                    if (!onnxFiles.includes(fileName)) {
-                        onnxFiles.push(fileName);
-                    }
-                }
-            }
-            
-            // Use found files if any
-            if (onnxFiles.length > 0) {
-                knownModels = onnxFiles;
-                console.log('[Settings] Loaded models from directory listing');
-            }
-        }
-    } catch (error) {
-        // Directory listing not available - this is normal, fall back to list_models.json
-    }
-    
-    // Sort files alphabetically
-    knownModels.sort();
-    
-    // Populate dropdown
-    modelSelect.innerHTML = '';
-    for (const file of knownModels) {
-        const option = document.createElement('option');
-        const fullPath = `checkpoints/${file}`;
-        option.value = fullPath;
-        option.textContent = file;
-        
-        // Select current model
-        if (window.mctsAgent && window.mctsAgent.currentModelPath === fullPath) {
-            option.selected = true;
-        } else if (fullPath.includes('checkpoint_SE_32x6_iter_204.onnx')) {
-            option.selected = true; // Default selection
-        }
-        
-        modelSelect.appendChild(option);
-    }
-    
-    console.log(`[Settings] Loaded ${knownModels.length} ONNX model(s)`);
-}
-
-// Model selector change handler
-document.getElementById('model-select').addEventListener('change', async function() {
-    const newModelPath = this.value;
-    console.log(`[Settings] Switching to model: ${newModelPath}`);
-    
-    try {
-        // Show loading indicator
-        this.disabled = true;
-        const originalText = this.options[this.selectedIndex].text;
-        this.options[this.selectedIndex].text = `Loading ${originalText}...`;
-        
-        // Clear all caches before reloading
-        clearMCTSCache();
-        
-        // Reinitialize agent with new model
-        const agent = getMCTSAgent();
-        await agent.initialize(newModelPath);
-        
-        // Restore UI
-        this.options[this.selectedIndex].text = originalText;
-        this.disabled = false;
-        
-        console.log(`[Settings] Successfully loaded model: ${newModelPath}`);
-        
-        // Update visualizations if in use
-        if (evalMode !== 'off') {
-            updateEvaluation();
-        }
-        if (policyMode !== 'off') {
-            updatePolicyVisualization();
-        }
-    } catch (error) {
-        console.error('[Settings] Error loading model:', error);
-        alert(`Failed to load model: ${error.message || error}`);
-        
-        // Revert selection
-        for (let i = 0; i < this.options.length; i++) {
-            if (window.mctsAgent && this.options[i].value === window.mctsAgent.currentModelPath) {
-                this.selectedIndex = i;
-                break;
-            }
-        }
-        this.disabled = false;
-    }
-});
-
-// Populate model selector on page load
-populateModelSelector();
-
-// MCTS simulations slider
-document.getElementById('mcts-simulations-slider').addEventListener('input', function() {
-    mctsSimulationCount = parseInt(this.value);
-    document.getElementById('mcts-simulations-value').textContent = mctsSimulationCount;
-    console.log(`[Settings] MCTS simulation count set to ${mctsSimulationCount}`);
-    
-    // Clear cache when simulation count changes
-    clearMCTSCache();
-    
-    // Update visualizations if they're active
-    if (policyMode !== 'off') {
-        updatePolicyVisualization();
-    }
-    if (evalMode !== 'off') {
-        updateEvaluation();
-    }
-});
-
-// Undo button
-document.getElementById('undo-btn').addEventListener('click', function() {
-    if (moveHistory.length > 1) {
-        // Remove the current state
-        moveHistory.pop();
-        
-        // Restore the previous state (don't remove it, it's now the current state)
-        const previousState = moveHistory[moveHistory.length - 1];
-        restoreBoardState(previousState);
-        gameOver = false;
-        
-        // If after undo it's an AI's turn, make AI move
-        if (gameMode[currentPlayer] === 'AI' && !gameOver) {
-            setTimeout(() => {
-                makeAIMove();
-            }, 100);
-        }
-    } else if (moveHistory.length === 1) {
-        // Only initial state exists, reset to it
-        const initialState = moveHistory[0];
-        restoreBoardState(initialState);
-        gameOver = false;
-        
-        // If initial position has AI to move, make AI move
-        if (gameMode[currentPlayer] === 'AI' && !gameOver) {
-            setTimeout(() => {
-                makeAIMove();
-            }, 100);
-        }
-    }
-});
-
-// Restart button
-document.getElementById('restart-btn').addEventListener('click', function() {
-    resetBoard();
-    gameOver = false;
-    currentPlayer = 'attacker';
-    
-    // Update player labels
-    const attackerLabel = document.getElementById("attacker-label");
-    const defenderLabel = document.getElementById("defender-label");
-    attackerLabel.classList.add('active-player');
-    defenderLabel.classList.remove('active-player');
-    
-    // Add/remove ai-turn class based on starting player
-    if (gameMode[currentPlayer] === 'AI') {
-        boardElement.classList.add('ai-turn');
-    } else {
-        boardElement.classList.remove('ai-turn');
-    }
-    
-    // Update visualizations after reset (resetBoard already does this, but ensure it's done)
-    // and then make AI move if needed
-    if (gameMode[currentPlayer] === 'AI' && !gameOver) {
-        // Small delay to ensure visualizations render before AI starts thinking
-        setTimeout(() => {
-            makeAIMove();
-        }, 100);
-    }
-});
+// ----------------------------------------------------------------------------------------------
+// Evaluation and move suggestions
+// ----------------------------------------------------------------------------------------------
 
 /**
- * Convert board HTML element to 2D array representation
- * @param {HTMLTableElement} boardElement 
- * @returns {Array<Array<string>>} 7x7 board array
+ * Start what the eval bar and the suggestions need for the current position. When the NN + MCTS
+ * AI is to move (aiSearches), its own search feeds them, so no separate search is started.
  */
-function getBoardState(boardElement) {
-    const board = [];
-    for (let r = 0; r < 7; r++) {
-        const row = [];
-        for (let c = 0; c < 7; c++) {
-            row.push(getPieceFromCell(boardElement.rows[r].cells[c]));
-        }
-        board.push(row);
+function startAnalysis(token, aiSearches) {
+    const g = app.game;
+    const wantNN = app.evalMode === 'nn' || app.policyMode === 'nn';
+    const wantMCTS = !aiSearches && (app.evalMode === 'nn-mcts' || app.policyMode === 'nn-mcts');
+    if (app.evalMode === 'heuristic') {
+        setTimeout(() => {
+            if (token === app.token && !app.animating) heuristicEval(token);
+        }, 50);
     }
-    return board;
+    const needsModel = wantNN || wantMCTS || (aiSearches && app.evalMode === 'nn-mcts');
+    if (app.modelState !== 'ready') {
+        if (needsModel && (app.evalMode === 'nn' || app.evalMode === 'nn-mcts')) {
+            setEval(null, app.modelState === 'loading' ? 'loading the model…' : 'no network for this board');
+        }
+        return;
+    }
+    if (wantNN) {
+        const job = client.evaluate(g);
+        app.analysisJobs.push(job.id);
+        job.promise.then((res) => {
+            if (token !== app.token || res.cancelled) return;
+            app.analysis.nn = res.result;
+            if (app.evalMode === 'nn') setEval(toAttackerView(res.result.value), 'network');
+            if (app.policyMode === 'nn') renderSuggestions();
+        }).catch(error => console.error('[Analysis] Network evaluation failed:', error));
+    }
+    if (wantMCTS) {
+        if (app.evalMode === 'nn-mcts') setEval(null, 'searching…');
+        const params = {
+            ...app.searchParams,
+            sims: app.continuous ? 0 : app.analysisSims,
+            maxSims: MAX_ANALYSIS_SIMS[app.size],
+            progressMs: 250,
+        };
+        const job = client.search(g, params, (stats) => {
+            if (token === app.token && app.analysisJobs.includes(job.id)) showSearchStats(stats);
+        });
+        app.analysisJobs.push(job.id);
+        job.promise.then((res) => {
+            if (token !== app.token || res.cancelled || !app.analysisJobs.includes(job.id)) return;
+            showSearchStats(res.stats, res.limitReached ? ' (limit)' : '');
+        }).catch(error => console.error('[Analysis] Search failed:', error));
+    }
 }
 
-const boardElement = document.getElementById('board');
+/** Restart the analysis after a display setting changed, without disturbing a thinking AI. */
+function refreshAnalysis() {
+    updateEvalVisibility();
+    if (app.animating || app.game.gameOver) return;
+    if (aiSearchesNow()) {
+        if (app.evalMode === 'nn-mcts') {
+            if (app.analysis.stats) showSearchStats(app.analysis.stats);
+            else setEval(null, 'searching…');
+        }
+        startAnalysisExtras();
+        renderSuggestions();
+        return;
+    }
+    if (client && app.analysisJobs.length) client.cancel(app.analysisJobs);
+    app.analysisJobs = [];
+    app.analysis = { stats: null, nn: null };
+    clearSuggestions();
+    resetEval();
+    startAnalysis(app.token, false);
+}
 
-// AI Evaluation and Policy visualization state
-let evalMode = 'nn-mcts'; // 'off', 'heuristic', 'nn', 'nn-mcts'
-let policyMode = 'off'; // 'off', 'heuristic', 'nn', 'nn-mcts'
-let mctsTemperature = 0.5; // Temperature for MCTS move selection
-let mctsSimulationCount = 200; // Simulation count for eval bar and move suggestions
-let mctsFpuReduction = 0.5; // FPU reduction for unvisited nodes (relative to parent)
-let mctsCPuct = 1.0; // Exploration constant for PUCT formula (balance exploration vs exploitation)
-let continuousEvalEnabled = false; // Whether to continuously update eval/suggestions
-let continuousEvalRunning = false; // Track if continuous eval is currently running
-let continuousEvalAbortController = null; // AbortController to stop continuous eval
-let continuousEvalSessionId = 0; // Unique ID for each continuous eval session
+/** On an AI's turn: the network or heuristic evaluation, if the eval bar or suggestions show one. */
+function startAnalysisExtras() {
+    const token = app.token;
+    if (app.evalMode === 'heuristic') heuristicEval(token);
+    if (app.evalMode !== 'nn' && app.policyMode !== 'nn') return;
+    const show = (result) => {
+        if (app.evalMode === 'nn') setEval(toAttackerView(result.value), 'network');
+        if (app.policyMode === 'nn') renderSuggestions();
+    };
+    if (app.analysis.nn) {
+        show(app.analysis.nn);
+    } else if (app.modelState === 'ready') {
+        const job = client.evaluate(app.game);
+        app.analysisJobs.push(job.id);
+        job.promise.then((res) => {
+            if (token !== app.token || res.cancelled) return;
+            app.analysis.nn = res.result;
+            show(res.result);
+        }).catch(error => console.error('[Analysis] Network evaluation failed:', error));
+    }
+}
 
-// Make MCTS parameters accessible globally for mctsAgent.js
-window.mctsFpuReduction = mctsFpuReduction;
-window.mctsCPuct = mctsCPuct;
+function showSearchStats(stats, suffix = '') {
+    app.analysis.stats = stats;
+    if (app.evalMode === 'nn-mcts') setEval(toAttackerView(stats.value), `${stats.visits} visits${suffix}`);
+    if (app.policyMode === 'nn-mcts') renderSuggestions();
+}
 
-// MCTS cache - stores results per position to avoid re-computation
-let mctsCache = {
-    boardHash: null,  // Hash of board position
-    player: null,     // Player who's turn it is
-    simulations: null, // Number of MCTS simulations
-    cPuct: null,      // C_puct exploration constant
-    fpuReduction: null, // FPU reduction parameter
-    mctsResult: null, // Full MCTS result {move, policyData: {policy, visitCounts}, value}
-    nnPolicy: null,   // Raw NN policy {policy, value}
-    nnValue: null,    // Just the NN value output
-    inProgress: null  // Promise for in-progress MCTS search (prevents race conditions)
+function heuristicEval(token) {
+    if (app.size !== 7) {
+        setEval(null, 'heuristics: Brandubh only');
+        return;
+    }
+    if (!cppReady) {
+        setTimeout(() => token === app.token && heuristicEval(token), 200);
+        return;
+    }
+    const { eval: value } = runMinimax(app.game, 4);
+    if (token === app.token) setEval(toAttackerView(value), 'heuristics, depth 4');
+}
+
+function updateEvalVisibility() {
+    $('AI-eval').classList.toggle('hidden', app.evalMode === 'off');
+}
+
+function resetEval() {
+    setEval(null, '');
+}
+
+/** Show an evaluation from the attackers' side (+1 attackers win), or null for none. */
+function setEval(value, detail) {
+    updateEvalVisibility();
+    const valueEl = $('eval-value');
+    const bar = $('eval-bar');
+    if (value === null || value === undefined || Number.isNaN(value)) {
+        valueEl.textContent = '–';
+        bar.style.left = '50%';
+    } else {
+        // The heuristics use a wider scale than the network's [-1, 1]
+        valueEl.textContent = value > 5 ? 'attackers winning' : value < -5 ? 'defenders winning' : value.toFixed(2);
+        bar.style.left = `${((Math.max(-1, Math.min(1, value)) + 1) / 2) * 100}%`;
+    }
+    $('eval-detail').textContent = detail || '';
+}
+
+function clearSuggestions() {
+    boardEl.querySelectorAll('.policy-overlay').forEach(el => el.remove());
+}
+
+/**
+ * Move suggestions: with a piece selected, the share of each of its moves; otherwise each piece's
+ * share of all moves. With a search, also the best value for the side to move.
+ */
+function renderSuggestions() {
+    clearSuggestions();
+    if (app.policyMode === 'off' || app.game.gameOver) return;
+    let entries;
+    if (app.policyMode === 'nn-mcts') {
+        if (!app.analysis.stats) return;
+        entries = app.analysis.stats.children.map(c => ({ move: c.move, weight: c.visits, q: c.q }));
+    } else {
+        if (!app.analysis.nn) return;
+        entries = app.analysis.nn.children.map(c => ({ move: c.move, weight: c.prior, q: null }));
+    }
+    const total = entries.reduce((sum, e) => sum + e.weight, 0);
+    if (total <= 0) return;
+    const shown = new Map();  // square -> {weight, q}
+    for (const e of entries) {
+        const from = moveFrom(e.move);
+        let sq;
+        if (app.selected >= 0) {
+            if (from !== app.selected) continue;
+            sq = moveTo(e.move);
+        } else {
+            sq = from;
+        }
+        const s = shown.get(sq) || { weight: 0, q: null };
+        s.weight += e.weight;
+        if (e.q !== null && e.weight > 0 && (s.q === null || e.q > s.q)) s.q = e.q;
+        shown.set(sq, s);
+    }
+    for (const [sq, s] of shown) {
+        const share = (s.weight / total) * 100;
+        if (share < 0.5) continue;
+        const overlay = document.createElement('div');
+        overlay.className = 'policy-overlay';
+        const q = s.q === null ? '' : `${s.q >= 0 ? '+' : ''}${s.q.toFixed(1)} `;
+        overlay.textContent = q ? `${q}(${Math.round(share)}%)` : `${Math.round(share)}%`;
+        app.cells[sq].td.appendChild(overlay);
+    }
+}
+
+// ----------------------------------------------------------------------------------------------
+// Minimax AI (C++/WebAssembly, Brandubh only)
+// ----------------------------------------------------------------------------------------------
+
+/**
+ * Ask the C++ Minimax for a move and its evaluation (for the player to move). It knows only one
+ * Brandubh rule set, so callers check its move against the engine.
+ */
+function runMinimax(game, depth) {
+    const size = game.board.length;
+    const pointers = Array.from({ length: 5 }, () => Module._malloc(4));
+    const boardPtr = Module._malloc(size * 4);
+    try {
+        new Int32Array(Module.HEAP32.buffer, boardPtr, size).set(game.board);
+        const player = game.currentPlayer === ATTACKER_PLAYER ? 1 : -1;
+        Module._AI_web_get_move(...pointers, boardPtr, player, depth);
+        // Read through fresh views: the call may have grown (and replaced) the memory buffer
+        const value = new Float32Array(Module.HEAP32.buffer, pointers[0], 1)[0];
+        const [fromX, fromY, toX, toY] = pointers.slice(1).map(p => new Int32Array(Module.HEAP32.buffer, p, 1)[0]);
+        const N = game.N;
+        return { move: encodeMove(fromY * N + fromX, toY * N + toX), eval: value };
+    } finally {
+        pointers.forEach(p => Module._free(p));
+        Module._free(boardPtr);
+    }
+}
+
+// ----------------------------------------------------------------------------------------------
+// Labels, panels and controls
+// ----------------------------------------------------------------------------------------------
+
+let thinkingTimer = null;
+
+function setSideLabel(i, type) {
+    const label = $(`${SIDES[i]}-label`);
+    label.querySelector('.side-name').textContent = `${SIDE_NAMES[i]}:`;
+    label.querySelector('.side-type').textContent = type;
+}
+
+function updateTurnLabels() {
+    SIDES.forEach((side, i) => {
+        setSideLabel(i, app.players[side].type === 'human' ? 'Human' : 'AI');
+        $(`${side}-label`).classList.toggle('active-player', !app.game.gameOver && app.game.currentPlayer === i);
+    });
+}
+
+function setThinking(on) {
+    clearInterval(thinkingTimer);
+    thinkingTimer = null;
+    if (!app.game) return;
+    updateTurnLabels();
+    if (!on) return;
+    const i = app.game.currentPlayer;
+    let dots = 0;
+    const draw = () => setSideLabel(i, `AI${'.'.repeat(1 + (dots++ % 3))}`);
+    draw();
+    thinkingTimer = setInterval(draw, 400);
+}
+
+function showGameOver() {
+    const g = app.game;
+    const winner = g.winner === ATTACKER_PLAYER ? 'Attackers' : 'Defenders';
+    const loser = g.winner === ATTACKER_PLAYER ? 'defenders' : 'attackers';
+    const reason = {
+        escape: 'The king escaped to a corner.',
+        capture: 'The king was captured.',
+        encirclement: 'The king is encircled.',
+        'no-moves': `The ${loser} have no legal moves.`,
+    }[g.endReason()] || '';
+    $('winMessage').innerHTML = `${winner} win!<small>${reason} Click to see the board.</small>`;
+    $('overlay').classList.remove('hidden');
+    setEval(g.winner === ATTACKER_PLAYER ? 1 : -1, 'game over');
+}
+
+function hideOverlay() {
+    $('overlay').classList.add('hidden');
+}
+
+let statusTimer = null;
+
+function showStatus(text, isError = false, ms = 8000) {
+    const el = $('status-line');
+    el.textContent = text;
+    el.classList.toggle('error', isError);
+    el.classList.remove('hidden');
+    clearTimeout(statusTimer);
+    if (ms) statusTimer = setTimeout(() => el.classList.add('hidden'), ms);
+}
+
+/** The line above the board: variant, rules, model, and a warning if the model's rules differ. */
+function updateInfo() {
+    const v = VARIANTS[app.size];
+    $('variant-label').textContent = `${v.name} ${app.size}×${app.size}`;
+    $('rules-label').textContent = rulesSummary(app.size, app.rules);
+    let modelText;
+    if (!app.model) modelText = 'no network model for this board';
+    else {
+        modelText = `AI: ${app.model.name}`;
+        if (app.modelState === 'loading') modelText += ' (loading…)';
+        if (app.modelState === 'error') modelText += ' (failed to load)';
+    }
+    $('model-label').textContent = `· ${modelText}`;
+    const warning = $('model-warning');
+    const trained = app.model && modelRules(app.model.desc);
+    const diffs = trained ? rulesDifferences(app.size, app.rules, trained) : [];
+    warning.classList.toggle('hidden', diffs.length === 0);
+    warning.textContent = diffs.length ? `⚠ The model was trained with other rules: ${diffs.join(', ')}.` : '';
+    if (app.modelState === 'error') showStatus(`The model failed to load: ${app.modelError}`, true, 0);
+    else if (app.modelState === 'ready' && $('status-line').classList.contains('error')) $('status-line').classList.add('hidden');
+    fillModelSelect($('model-select'), app.size, app.model);
+    const note = modelNote(app.model) + (app.msPerCall ? ` One network call takes ${app.msPerCall.toFixed(1)} ms here.` : '');
+    $('model-note').textContent = note;
+}
+
+function updateHelp() {
+    const list = $('rules-text');
+    list.innerHTML = '';
+    for (const text of rulesList(app.size, app.rules)) {
+        const li = document.createElement('li');
+        li.textContent = text;
+        list.appendChild(li);
+    }
+}
+
+function updateButtons() {
+    $('undo-btn').disabled = app.history.length === 0;
+}
+
+function fillModelSelect(select, size, selected) {
+    const models = modelsForSize(size);
+    select.innerHTML = '';
+    if (models.length === 0) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'No model for this board';
+        select.appendChild(option);
+        select.disabled = true;
+        return;
+    }
+    select.disabled = false;
+    for (const m of models) {
+        const option = document.createElement('option');
+        option.value = m.id;
+        option.textContent = m.name;
+        select.appendChild(option);
+    }
+    select.value = selected && selected.size === size ? selected.id : models[0].id;
+}
+
+function updatePlayerOptions() {
+    const hasModel = modelsForSize(app.size).length > 0 && client !== null;
+    for (const side of SIDES) {
+        const select = $(`${side}-type`);
+        const config = app.players[side];
+        const mcts = select.querySelector('option[value="mcts"]');
+        const minimax = select.querySelector('option[value="minimax"]');
+        mcts.disabled = !hasModel;
+        mcts.textContent = hasModel ? 'AI: NN + MCTS' : 'AI: NN + MCTS (no model)';
+        minimax.disabled = app.size !== 7;
+        minimax.textContent = app.size === 7 ? 'AI: Minimax' : 'AI: Minimax (7×7 only)';
+        if (config.type === 'minimax' && app.size !== 7) config.type = hasModel ? 'mcts' : 'human';
+        if (config.type === 'mcts' && !hasModel) config.type = 'human';
+        select.value = config.type;
+        updateDifficultyVisibility(side);
+    }
+    const heuristic = $('eval-mode-select').querySelector('option[value="heuristic"]');
+    heuristic.disabled = app.size !== 7;
+    heuristic.textContent = app.size === 7 ? 'Heuristics' : 'Heuristics (7×7 only)';
+    if (app.evalMode === 'heuristic' && app.size !== 7) app.evalMode = 'nn-mcts';
+    $('eval-mode-select').value = app.evalMode;
+}
+
+function updateDifficultyVisibility(side) {
+    const type = app.players[side].type;
+    $(`${side}-mcts-difficulty-container`).classList.toggle('hidden', type !== 'mcts');
+    $(`${side}-minimax-difficulty-container`).classList.toggle('hidden', type !== 'minimax');
+}
+
+function updateSearchControls() {
+    const p = app.searchParams;
+    $('cpuct-slider').value = p.cPuct;
+    $('cpuct-value').textContent = p.cPuct.toFixed(2);
+    $('fpu-reduction-slider').value = p.fpuReduction;
+    $('fpu-reduction-value').textContent = p.fpuReduction.toFixed(2);
+    $('discount-slider').value = p.discount;
+    $('discount-value').textContent = p.discount.toFixed(3);
+}
+
+function openPanel(id) {
+    for (const panel of document.querySelectorAll('.panel')) {
+        panel.classList.toggle('hidden', panel.id !== id || !panel.classList.contains('hidden'));
+    }
+}
+
+function closePanels() {
+    document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
+}
+
+// --- New game panel ---
+
+const newGameForm = {
+    size: () => Number($('ng-variant').value),
+    model: () => findModel($('ng-model').value),
+    rules: () => ({
+        kingCapturePieces: Number($('ng-kcp').value),
+        kingCanCapture: $('ng-kcc').checked,
+        throneEnabled: $('ng-throne').checked,
+        throneIsHostile: $('ng-throne-hostile').checked,
+    }),
 };
 
-// Helper to compute simple board hash
-function getBoardHash(boardElement, player) {
-    let hash = player + ':';
-    for (let r = 0; r < 7; r++) {
-        for (let c = 0; c < 7; c++) {
-            hash += getPieceFromCell(boardElement.rows[r].cells[c]);
-        }
-    }
-    return hash;
+function setRuleControls(rules) {
+    $('ng-kcp').value = String(rules.kingCapturePieces);
+    $('ng-kcc').checked = rules.kingCanCapture;
+    $('ng-throne').checked = rules.throneEnabled;
+    $('ng-throne-hostile').checked = rules.throneIsHostile;
 }
 
-// Clear MCTS cache (call when board changes)
-function clearMCTSCache() {
-    mctsCache.boardHash = null;
-    mctsCache.player = null;
-    mctsCache.simulations = null;
-    mctsCache.cPuct = null;
-    mctsCache.fpuReduction = null;
-    mctsCache.mctsResult = null;
-    mctsCache.nnPolicy = null;
-    mctsCache.nnValue = null;
-    mctsCache.inProgress = null;
-    
-    // Stop and restart continuous eval when position changes
-    if (continuousEvalEnabled) {
-        stopContinuousEval();
-        // Use a longer delay to ensure the async loop has fully stopped
-        setTimeout(() => {
-            if (continuousEvalEnabled && !gameOver && (evalMode !== 'off' || policyMode !== 'off')) {
-                console.log("[Clear Cache] Restarting continuous eval after position change");
-                startContinuousEval();
-            }
-        }, 200);
-    }
+function openNewGamePanel() {
+    $('ng-variant').value = String(app.size);
+    fillModelSelect($('ng-model'), app.size, app.model);
+    const trained = app.model && modelRules(app.model.desc);
+    $('ng-model-rules').checked = Boolean(trained && Tafl.rulesEqual(trained, app.rules));
+    setRuleControls(app.rules);
+    updateNewGamePanel();
+    openPanel('newGameText');
 }
 
-// Initialize MCTS agent on page load
-console.log("[Script] Initializing MCTS agent on page load...");
-initializeMCTSAgent().then(success => {
-    if (success) {
-        console.log("[Script] MCTS agent initialized successfully!");
-        // Trigger initial evaluation if evalMode is set
-        if (evalMode !== 'off') {
-            console.log("[Script] Triggering initial evaluation...");
-            updateEvaluation();
-        }
-    } else {
-        console.error("[Script] MCTS agent initialization failed. Tree-search AI will be used as fallback.");
-    }
-}).catch(error => {
-    console.error("[Script] MCTS agent initialization error:", error);
-});
-
-document.addEventListener('DOMContentLoaded', function() {
-    const initialSetup = [
-        ['0', '0', '0', '⚫', '0', '0', '0'],
-        ['0', '0', '0', '⚫', '0', '0', '0'],
-        ['0', '0', '0', '⚪', '0', '0', '0'],
-        ['⚫', '⚫', '⚪', '⬜', '⚪', '⚫', '⚫'],
-        ['0', '0', '0', '⚪', '0', '0', '0'],
-        ['0', '0', '0', '⚫', '0', '0', '0'],
-        ['0', '0', '0', '⚫', '0', '0', '0']
-    ];
-
-    for (let row of initialSetup) {
-        const tr = document.createElement('tr');
-        for (let cell of row) {
-            const td = document.createElement('td');
-            
-            // Add class based on piece type
-            if (cell !== '0') {
-                td.innerText = cell;
-                td.classList.add(cell); // Add class to td (e.g., "A", "D", "K")
-            }
-
-            // Attach the click event to the cell
-            td.addEventListener('click', handleCellClick);
-            
-            // Prevent text selection
-            td.addEventListener('mousedown', function(event) {
-                event.preventDefault();
-            });
-
-            tr.appendChild(td);
-        }
-        boardElement.appendChild(tr);
-    }
-    boardElement.className = "attacker";
-    updatePlayerRoles(gameMode["attacker"], gameMode["defender"]);
-});
-
-// AI Evaluation dropdown handler
-document.getElementById('eval-mode-select').addEventListener('change', function() {
-    setEvalMode(this.value);
-});
-
-// Move suggestions dropdown handler
-document.getElementById('policy-mode-select').addEventListener('change', function() {
-    setPolicyMode(this.value);
-});
-
-function setEvalMode(mode) {
-    evalMode = mode;
-    
-    // Update dropdown value
-    document.getElementById('eval-mode-select').value = mode;
-    
-    // Clear cache when switching modes to ensure fresh computation
-    if (mode === 'nn-mcts' || mode === 'nn') {
-        clearMCTSCache();
-    }
-    
-    // Restart continuous eval if enabled
-    if (continuousEvalEnabled) {
-        stopContinuousEval();
-        if (mode !== 'off' || policyMode !== 'off') {
-            startContinuousEval();
-        }
-    }
-    
-    // Update evaluation display
-    updateEvaluation();
+function updateNewGamePanel() {
+    const size = newGameForm.size();
+    const model = newGameForm.model();
+    const trained = model && modelRules(model.desc);
+    const useModel = $('ng-model-rules');
+    useModel.disabled = !trained;
+    if (!trained) useModel.checked = false;
+    if (useModel.checked) setRuleControls(trained);
+    $('ng-rules').disabled = useModel.checked;
+    $('ng-throne-hostile').disabled = !$('ng-throne').checked;
+    $('ng-throne-hostile-text').textContent = VARIANTS[size].throneHostileToAttackers
+        ? 'The empty throne is hostile to defenders and the king too (it always is to attackers)'
+        : 'The empty throne is hostile to every piece (otherwise to none)';
+    $('ng-model-note').textContent = modelNote(model);
+    const rules = Tafl.normalizeRules(newGameForm.rules());
+    const diffs = trained ? rulesDifferences(size, rules, trained) : [];
+    const warning = $('ng-warning');
+    warning.classList.toggle('hidden', diffs.length === 0);
+    warning.textContent = diffs.length ? `This model was trained with other rules (${diffs.join(', ')}). It will play, but not as well.` : '';
 }
 
-function setPolicyMode(mode) {
-    policyMode = mode;
-    
-    // Update dropdown value
-    document.getElementById('policy-mode-select').value = mode;
-    
-    // Don't clear cache when switching policy modes - reuse evaluation's MCTS result!
-    // Only clear cache for actual board changes (moves, undo, etc.)
-    
-    // Restart continuous eval if enabled
-    if (continuousEvalEnabled) {
-        stopContinuousEval();
-        if (mode !== 'off' || evalMode !== 'off') {
-            startContinuousEval();
-        }
-    }
-    
-    // Update policy visualization
-    if (mode === 'off') {
-        clearPolicyVisualization();
-    } else {
-        updatePolicyVisualization();
-    }
+// On phones the player and analysis menus move into the Settings panel, so the board, the players
+// and one row of buttons fit on the screen. The same elements move, so their handlers stay.
+const phoneLayout = window.matchMedia('(max-width: 768px)');
+
+function placePlayOptions() {
+    const options = $('play-options');
+    if (phoneLayout.matches) $('settings-play-slot').appendChild(options);
+    else $('buttons-container').insertBefore(options, $('help-container'));
 }
 
-/**
- * Start continuous MCTS evaluation
- */
-async function startContinuousEval() {
-    // Don't start if already running - let it finish first
-    if (continuousEvalRunning) {
-        console.log("[Continuous Eval] Already running, skipping start");
-        return;
-    }
-    
-    if (gameOver) {
-        console.log("[Continuous Eval] Game is over, not starting");
-        return;
-    }
-    
-    if (!window.mctsAgent || !window.mctsAgent.isReady) {
-        console.log("[Continuous Eval] MCTS agent not ready");
-        return;
-    }
-    
-    if (evalMode === 'off' && policyMode === 'off') {
-        console.log("[Continuous Eval] Both eval and policy are off, not starting");
-        return;
-    }
-    
-    continuousEvalRunning = true;
-    continuousEvalAbortController = new AbortController();
-    const signal = continuousEvalAbortController.signal;
-    
-    // Create unique session ID to detect if we've been replaced
-    const sessionId = ++continuousEvalSessionId;
-    
-    console.log("[Continuous Eval] Starting continuous evaluation (session", sessionId, ")");
-    
-    const hash = getBoardHash(boardElement, currentPlayer);
-    let totalSimulations = 0;
-    const batchSize = 100; // Update every 100 simulations
-    
-    // Initialize the MCTS tree if needed
-    const mcts = window.mctsAgent.mcts;
-    if (!mcts.root || mcts.root.visitCount === 0) {
-        console.log("[Continuous Eval] Initializing MCTS tree with first batch");
-        await window.mctsAgent.getBestMove(boardElement, currentPlayer, batchSize);
-        totalSimulations += batchSize;
-    }
-    
+// ----------------------------------------------------------------------------------------------
+// Preferences (kept in this browser only)
+// ----------------------------------------------------------------------------------------------
+
+function loadPrefs() {
     try {
-        while (continuousEvalRunning && !signal.aborted && sessionId === continuousEvalSessionId) {
-            // Check if position changed
-            const currentHash = getBoardHash(boardElement, currentPlayer);
-            if (currentHash !== hash) {
-                console.log("[Continuous Eval] Position changed, stopping session", sessionId);
-                break;
-            }
-            
-            // Run batch of simulations on existing tree
-            for (let i = 0; i < batchSize; i++) {
-                await mcts.runSimulation(boardElement);
-            }
-            totalSimulations += batchSize;
-            
-            // Update visualizations
-            if (mcts.root) {
-                const rootValue = mcts.root.meanValue;
-                console.log(`[Continuous Eval] ${totalSimulations} sims, visits: ${mcts.root.visitCount}, value: ${rootValue.toFixed(3)}`);
-                
-                // Update eval display
-                if (evalMode === 'nn-mcts') {
-                    updateEvalDisplay(rootValue);
-                }
-                
-                // Update policy visualization
-                if (policyMode === 'nn-mcts') {
-                    await updatePolicyVisualization();
-                }
-            }
-            
-            // Small delay to keep UI responsive
-            await new Promise(resolve => setTimeout(resolve, 0));
-        }
-    } catch (error) {
-        console.error("[Continuous Eval] Error in session", sessionId, ":", error);
-    } finally {
-        // Only set continuousEvalRunning to false if we're still the active session
-        if (sessionId === continuousEvalSessionId) {
-            continuousEvalRunning = false;
-            console.log("[Continuous Eval] Stopped session", sessionId);
-        } else {
-            console.log("[Continuous Eval] Session", sessionId, "terminated (replaced by", continuousEvalSessionId, ")");
-        }
+        return JSON.parse(localStorage.getItem(PREFS_KEY)) || {};
+    } catch (e) {
+        return {};
     }
 }
 
-/**
- * Stop continuous MCTS evaluation
- */
-function stopContinuousEval() {
-    console.log("[Continuous Eval] Stopping...");
-    if (continuousEvalAbortController) {
-        continuousEvalAbortController.abort();
-        continuousEvalAbortController = null;
-    }
-    continuousEvalRunning = false;
-}
-
-/**
- * Update eval display with a value
- */
-function updateEvalDisplay(rootValue) {
-    let evalValue = rootValue;
-    
-    // Convert to attacker's perspective if needed
-    if (currentPlayer === 'defender') {
-        evalValue = -evalValue;
-    }
-    
-    const evalValueSpan = document.getElementById('eval-value');
-    const evalBar = document.getElementById('eval-bar');
-    
-    // Display the evaluation (always from attacker's perspective)
-    if (evalValue > 5) {
-        evalValueSpan.textContent = 'attacker\nwinning';
-    } else if (evalValue < -5) {
-        evalValueSpan.textContent = 'defender\nwinning';
-    } else {
-        evalValueSpan.textContent = evalValue.toFixed(2);
-    }
-    
-    // Update the visual bar position
-    const clampedValue = Math.max(-1, Math.min(1, evalValue));
-    const barPosition = ((clampedValue + 1) / 2) * 100;
-    evalBar.style.left = `${barPosition}%`;
-}
-
-/**
- * Get or compute MCTS result for current position (with caching)
- * This function handles race conditions when multiple callers request MCTS simultaneously
- */
-async function getMCTSResult() {
-    // If continuous eval is running, use the current tree state
-    if (continuousEvalEnabled && continuousEvalRunning && window.mctsAgent.mcts.root) {
-        const root = window.mctsAgent.mcts.root;
-        
-        // Build visit counts map from current tree
-        const visitCounts = new Map();
-        for (const [moveKey, child] of root.children.entries()) {
-            const [fromRow, fromCol, toRow, toCol] = moveKey.split(',').map(Number);
-            const moveIdx = window.mctsAgent.moveEncoder.encodeMove(fromRow, fromCol, toRow, toCol);
-            visitCounts.set(moveIdx, child.visitCount);
-        }
-        
-        const result = {
-            rootValue: root.meanValue,
-            rootVisits: root.visitCount,
-            policyData: {
-                policy: window.mctsAgent.mcts.lastRawPolicy || new Float32Array(1176),
-                visitCounts: visitCounts
-            }
-        };
-        return result;
-    }
-    
-    const hash = getBoardHash(boardElement, currentPlayer);
-    const simCount = mctsSimulationCount;  // Use global setting
-    const currentCPuct = mctsCPuct;
-    const currentFpuReduction = mctsFpuReduction;
-    
-    // Check cache (must match position AND parameters)
-    if (mctsCache.boardHash === hash && 
-        mctsCache.player === currentPlayer && 
-        mctsCache.simulations === simCount &&
-        mctsCache.cPuct === currentCPuct &&
-        mctsCache.fpuReduction === currentFpuReduction &&
-        mctsCache.mctsResult) {
-        console.log("[MCTS Cache] Using cached MCTS result");
-        return mctsCache.mctsResult;
-    }
-    
-    // Check if a search is already in progress for this exact configuration
-    if (mctsCache.inProgress && 
-        mctsCache.boardHash === hash && 
-        mctsCache.player === currentPlayer &&
-        mctsCache.simulations === simCount &&
-        mctsCache.cPuct === currentCPuct &&
-        mctsCache.fpuReduction === currentFpuReduction) {
-        console.log("[MCTS Cache] Waiting for in-progress MCTS search to complete");
-        return await mctsCache.inProgress;
-    }
-    
-    console.log("[MCTS Cache] Computing new MCTS result with", simCount, "simulations (c_puct=", currentCPuct, "fpu=", currentFpuReduction, ")");
-    
-    // Create promise for this search and store it to prevent duplicate searches
-    const searchPromise = (async () => {
-        const result = await window.mctsAgent.getBestMove(boardElement, currentPlayer, simCount);
-        
-        // Cache it, including the root value and parameters
-        if (result && window.mctsAgent.mcts.root) {
-            result.rootValue = window.mctsAgent.mcts.root.meanValue;
-            result.rootVisits = window.mctsAgent.mcts.root.visitCount;
-            
-            mctsCache.boardHash = hash;
-            mctsCache.player = currentPlayer;
-            mctsCache.simulations = simCount;
-            mctsCache.cPuct = currentCPuct;
-            mctsCache.fpuReduction = currentFpuReduction;
-            mctsCache.mctsResult = result;
-        }
-        
-        // Clear in-progress marker
-        mctsCache.inProgress = null;
-        
-        return result;
-    })();
-    
-    // Store the promise AND parameters so other callers can wait for it
-    mctsCache.boardHash = hash;
-    mctsCache.player = currentPlayer;
-    mctsCache.simulations = simCount;
-    mctsCache.cPuct = currentCPuct;
-    mctsCache.fpuReduction = currentFpuReduction;
-    mctsCache.inProgress = searchPromise;
-    
-    return await searchPromise;
-}
-
-/**
- * Get or compute NN policy for current position (with caching)
- */
-/**
- * Apply softmax to convert logits to probabilities
- */
-function softmax(logits) {
-    const maxLogit = Math.max(...logits);
-    const expLogits = new Float32Array(logits.length);
-    let sum = 0;
-    
-    for (let i = 0; i < logits.length; i++) {
-        expLogits[i] = Math.exp(logits[i] - maxLogit);
-        sum += expLogits[i];
-    }
-    
-    for (let i = 0; i < logits.length; i++) {
-        expLogits[i] /= sum;
-    }
-    
-    return expLogits;
-}
-
-/**
- * Get raw NN policy and value for current board state
- */
-async function getNNPolicy() {
-    const hash = getBoardHash(boardElement, currentPlayer);
-    
-    // Check cache
-    if (mctsCache.boardHash === hash && mctsCache.player === currentPlayer && mctsCache.nnPolicy) {
-        return mctsCache.nnPolicy;
-    }
-    
-    // Compute new NN policy
-    const result = await window.mctsAgent.getPolicy(boardElement, currentPlayer);
-    
-    // Cache it
-    if (result) {
-        mctsCache.boardHash = hash;
-        mctsCache.player = currentPlayer;
-        mctsCache.nnPolicy = result;
-        mctsCache.nnValue = result.value;
-    }
-    
-    return result;
-}
-
-/**
- * Update policy visualization on the board
- */
-async function updatePolicyVisualization() {
-    if (policyMode === 'off') {
-        clearPolicyVisualization();
-        return;
-    }
-    
-    if (policyMode === 'heuristic') {
-        // TODO: Implement heuristic-based move suggestions if desired
-        clearPolicyVisualization();
-        return;
-    }
-    
-    if (!window.mctsAgent || !window.mctsAgent.isReady) {
-        clearPolicyVisualization();
-        return;
-    }
-    
-    // Validate board state before running visualization
-    if (!boardElement || !boardElement.rows || boardElement.rows.length !== 7) {
-        return;
-    }
-    
-    // Check if any cells are undefined or in animation state
-    for (let r = 0; r < 7; r++) {
-        if (!boardElement.rows[r] || !boardElement.rows[r].cells || boardElement.rows[r].cells.length !== 7) {
-            return;
-        }
-        // Check if any cell has animated spans (capture animation in progress)
-        for (let c = 0; c < 7; c++) {
-            const cell = boardElement.rows[r].cells[c];
-            if (cell.querySelector('span')) {
-                return;
-            }
-        }
-    }
-    
+function savePrefs() {
     try {
-        let policyData;
-        
-        if (policyMode === 'nn') {
-            // Use raw NN policy
-            const nnResult = await getNNPolicy();
-            // Apply softmax to convert logits to probabilities
-            const policyProbs = softmax(nnResult.policy);
-            policyData = {
-                policy: policyProbs,
-                visitCounts: null,
-                value: nnResult.value,
-                moveValues: null,
-                source: 'nn'
-            };
-        } else if (policyMode === 'nn-mcts') {
-            // If continuous eval is running, use current tree directly without waiting
-            if (continuousEvalEnabled && continuousEvalRunning && window.mctsAgent.mcts.root) {
-                const root = window.mctsAgent.mcts.root;
-                const visitCounts = new Map();
-                const moveValues = new Map();
-                
-                for (const [moveKey, child] of root.children.entries()) {
-                    const [fromRow, fromCol, toRow, toCol] = moveKey.split(',').map(Number);
-                    const moveIdx = window.mctsAgent.moveEncoder.encodeMove(fromRow, fromCol, toRow, toCol);
-                    visitCounts.set(moveIdx, child.visitCount);
-                    moveValues.set(moveKey, child.meanValue);
-                }
-                
-                policyData = {
-                    policy: window.mctsAgent.mcts.lastRawPolicy || new Float32Array(1176),
-                    visitCounts: visitCounts,
-                    value: root.meanValue,
-                    moveValues: moveValues,
-                    source: 'mcts'
-                };
-            } else {
-                // Use MCTS via getMCTSResult (will run search if needed)
-                const mctsResult = await getMCTSResult();
-                if (mctsResult && mctsResult.policyData) {
-                    // Extract move values from MCTS children
-                    const moveValues = new Map();
-                    if (window.mctsAgent && window.mctsAgent.mcts && window.mctsAgent.mcts.root) {
-                        for (const [moveKey, child] of window.mctsAgent.mcts.root.children.entries()) {
-                            moveValues.set(moveKey, child.meanValue);
-                        }
-                    }
-                    
-                    policyData = {
-                        policy: mctsResult.policyData.policy,
-                        visitCounts: mctsResult.policyData.visitCounts,
-                        value: mctsResult.rootValue || 0,
-                        moveValues: moveValues,
-                        source: 'mcts'
-                    };
-                } else {
-                    // Fallback to NN
-                    const nnResult = await getNNPolicy();
-                    const policyProbs = softmax(nnResult.policy);
-                    policyData = {
-                        policy: policyProbs,
-                        visitCounts: null,
-                        value: nnResult.value,
-                        moveValues: null,
-                        source: 'nn'
-                    };
-                }
-            }
-        }
-        
-        // Visualize based on selected piece
-        if (selectedPiece) {
-            await visualizePolicyForPiece(selectedPiece, policyData);
-        } else {
-            await visualizePolicyForAllPieces(policyData);
-        }
-    } catch (error) {
-        console.error("[Policy Viz] Error:", error);
-        clearPolicyVisualization();
+        localStorage.setItem(PREFS_KEY, JSON.stringify({
+            size: app.size,
+            rules: app.rules,
+            modelBySize: app.modelBySize,
+            players: app.players,
+            evalMode: app.evalMode,
+            policyMode: app.policyMode,
+            temperature: app.temperature,
+            analysisSims: app.analysisSims,
+            continuous: app.continuous,
+        }));
+    } catch (e) {
+        // Private windows and blocked storage: nothing is remembered, which is fine
     }
 }
 
-/**
- * Update AI evaluation display
- */
-let evalLoadingInterval = null;
-let aiThinkingInterval = null;
-
-function setEvalLoading(isLoading) {
-    const evalValueSpan = document.getElementById('eval-value');
-    
-    if (isLoading) {
-        // Clear any existing interval
-        if (evalLoadingInterval) {
-            clearInterval(evalLoadingInterval);
-        }
-        
-        // Animate dots: . .. ... . .. ...
-        let dotCount = 0;
-        evalValueSpan.textContent = '.';
-        
-        evalLoadingInterval = setInterval(() => {
-            dotCount = (dotCount + 1) % 4;
-            evalValueSpan.textContent = '.'.repeat(dotCount === 0 ? 1 : dotCount);
-        }, 400);
-    } else {
-        // Stop animation
-        if (evalLoadingInterval) {
-            clearInterval(evalLoadingInterval);
-            evalLoadingInterval = null;
-        }
-        // Update evaluation will be called to show the actual value
+function applyPrefs(prefs) {
+    for (const side of SIDES) {
+        const p = prefs.players && prefs.players[side];
+        if (!p) continue;
+        if (['human', 'mcts', 'minimax'].includes(p.type)) app.players[side].type = p.type;
+        if (Number.isFinite(p.sims)) app.players[side].sims = p.sims;
+        if (Number.isFinite(p.depth)) app.players[side].depth = p.depth;
     }
+    if (['off', 'heuristic', 'nn', 'nn-mcts'].includes(prefs.evalMode)) app.evalMode = prefs.evalMode;
+    if (['off', 'nn', 'nn-mcts'].includes(prefs.policyMode)) app.policyMode = prefs.policyMode;
+    if (Number.isFinite(prefs.temperature)) app.temperature = prefs.temperature;
+    if (Number.isFinite(prefs.analysisSims)) app.analysisSims = prefs.analysisSims;
+    app.continuous = Boolean(prefs.continuous);
+    if (prefs.modelBySize && typeof prefs.modelBySize === 'object') app.modelBySize = { ...prefs.modelBySize };
+
+    for (const side of SIDES) {
+        const p = app.players[side];
+        $(`${side}-type`).value = p.type;
+        $(`${side}-mcts-difficulty`).value = p.sims;
+        $(`${side}-mcts-value`).textContent = p.sims;
+        $(`${side}-minimax-difficulty`).value = p.depth;
+        $(`${side}-minimax-value`).textContent = p.depth;
+    }
+    $('eval-mode-select').value = app.evalMode;
+    $('policy-mode-select').value = app.policyMode;
+    $('temperature-slider').value = app.temperature;
+    $('temperature-value').textContent = app.temperature.toFixed(2);
+    $('mcts-simulations-slider').value = app.analysisSims;
+    $('mcts-simulations-value').textContent = app.analysisSims;
+    $('continuous-eval-toggle').checked = app.continuous;
 }
 
-function setAIThinking(isThinking) {
-    const label = currentPlayer === 'attacker' 
-        ? document.getElementById('attacker-label')
-        : document.getElementById('defender-label');
-    
-    if (isThinking) {
-        // Clear any existing interval
-        if (aiThinkingInterval) {
-            clearInterval(aiThinkingInterval);
-        }
-        
-        // Get the base text (e.g., "Attacker:<br>AI" or "Defender:<br>AI")
-        const baseText = currentPlayer === 'attacker' ? 'Attacker:<br>AI' : 'Defender:<br>AI';
-        
-        // Animate dots: AI. AI.. AI... AI. AI.. AI...
-        let dotCount = 1;
-        label.innerHTML = baseText + '.';
-        
-        aiThinkingInterval = setInterval(() => {
-            dotCount = (dotCount % 3) + 1;
-            label.innerHTML = baseText + '.'.repeat(dotCount);
-        }, 400);
-    } else {
-        // Stop animation
-        if (aiThinkingInterval) {
-            clearInterval(aiThinkingInterval);
-            aiThinkingInterval = null;
-        }
-        // Restore base text
-        const baseText = currentPlayer === 'attacker' ? 'Attacker:<br>AI' : 'Defender:<br>AI';
-        label.innerHTML = baseText;
+// ----------------------------------------------------------------------------------------------
+// Event handlers
+// ----------------------------------------------------------------------------------------------
+
+function bindEvents() {
+    // Presses are handled as pointer events (onPointerDown). Clicks without a pointer behind them
+    // (detail 0: from scripts or assistive technology) still work.
+    boardEl.addEventListener('click', (event) => {
+        const td = event.target.closest('td');
+        if (td && event.detail === 0) onCellClick(Number(td.dataset.sq));
+    });
+    boardEl.addEventListener('pointerdown', onPointerDown);
+    boardEl.addEventListener('mousedown', (event) => event.preventDefault());
+
+    for (const side of SIDES) {
+        $(`${side}-type`).addEventListener('change', (event) => {
+            app.players[side].type = event.target.value;
+            updateDifficultyVisibility(side);
+            savePrefs();
+            onPositionChanged();
+        });
+        $(`${side}-mcts-difficulty`).addEventListener('input', (event) => {
+            app.players[side].sims = Number(event.target.value);
+            $(`${side}-mcts-value`).textContent = event.target.value;
+            savePrefs();
+        });
+        $(`${side}-minimax-difficulty`).addEventListener('input', (event) => {
+            app.players[side].depth = Number(event.target.value);
+            $(`${side}-minimax-value`).textContent = event.target.value;
+            savePrefs();
+        });
     }
+
+    $('eval-mode-select').addEventListener('change', (event) => {
+        app.evalMode = event.target.value;
+        savePrefs();
+        resetEval();
+        refreshAnalysis();
+    });
+    $('policy-mode-select').addEventListener('change', (event) => {
+        app.policyMode = event.target.value;
+        savePrefs();
+        if (app.policyMode === 'off') clearSuggestions();
+        refreshAnalysis();
+    });
+
+    $('undo-btn').addEventListener('click', undo);
+    $('restart-btn').addEventListener('click', () => newGame(app.size, app.rules, app.model));
+    $('new-game-btn').addEventListener('click', openNewGamePanel);
+    $('help-btn').addEventListener('click', () => openPanel('helpText'));
+    $('settings-btn').addEventListener('click', () => openPanel('settingsText'));
+    document.querySelectorAll('[data-close]').forEach(el => {
+        el.addEventListener('click', () => $(el.dataset.close).classList.add('hidden'));
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closePanels();
+    });
+    $('overlay').addEventListener('click', hideOverlay);
+
+    // New game panel
+    $('ng-variant').addEventListener('change', () => {
+        const size = newGameForm.size();
+        fillModelSelect($('ng-model'), size, defaultModelFor(size));
+        const trained = newGameForm.model() && modelRules(newGameForm.model().desc);
+        if (!trained) setRuleControls(Tafl.normalizeRules(FALLBACK_RULES[size]));
+        $('ng-model-rules').checked = Boolean(trained);
+        updateNewGamePanel();
+    });
+    $('ng-model').addEventListener('change', updateNewGamePanel);
+    $('ng-model-rules').addEventListener('change', updateNewGamePanel);
+    for (const id of ['ng-kcp', 'ng-kcc', 'ng-throne', 'ng-throne-hostile']) {
+        $(id).addEventListener('change', updateNewGamePanel);
+    }
+    $('ng-start').addEventListener('click', () => {
+        closePanels();
+        newGame(newGameForm.size(), newGameForm.rules(), newGameForm.model());
+    });
+
+    // Settings panel
+    $('model-select').addEventListener('change', (event) => {
+        const model = findModel(event.target.value);
+        if (model && model !== app.model) {
+            selectModel(model);
+            savePrefs();
+        }
+    });
+    $('temperature-slider').addEventListener('input', (event) => {
+        app.temperature = Number(event.target.value);
+        $('temperature-value').textContent = app.temperature.toFixed(2);
+        savePrefs();
+    });
+    $('mcts-simulations-slider').addEventListener('input', (event) => {
+        $('mcts-simulations-value').textContent = event.target.value;
+    });
+    $('mcts-simulations-slider').addEventListener('change', (event) => {
+        app.analysisSims = Number(event.target.value);
+        savePrefs();
+        refreshAnalysis();
+    });
+    $('continuous-eval-toggle').addEventListener('change', (event) => {
+        app.continuous = event.target.checked;
+        savePrefs();
+        refreshAnalysis();
+    });
+    const searchSlider = (id, key, digits) => {
+        $(`${id}-slider`).addEventListener('input', (event) => {
+            app.searchParams[key] = Number(event.target.value);
+            $(`${id}-value`).textContent = app.searchParams[key].toFixed(digits);
+        });
+        $(`${id}-slider`).addEventListener('change', refreshAnalysis);
+    };
+    searchSlider('cpuct', 'cPuct', 2);
+    searchSlider('fpu-reduction', 'fpuReduction', 2);
+    searchSlider('discount', 'discount', 3);
+    $('reset-search').addEventListener('click', () => {
+        app.searchParams = modelSearchSettings(app.model && app.model.desc);
+        updateSearchControls();
+        refreshAnalysis();
+    });
 }
 
-async function updateEvaluation() {
-    if (evalMode === 'off') {
-        document.getElementById('AI-eval').classList.add('hidden');
-        return;
-    }
-    
-    document.getElementById('AI-eval').classList.remove('hidden');
-    
-    // Validate board state before running evaluation
-    if (!boardElement || !boardElement.rows || boardElement.rows.length !== 7) {
-        return;
-    }
-    
-    // Check if any cells are undefined or in animation state
-    for (let r = 0; r < 7; r++) {
-        if (!boardElement.rows[r] || !boardElement.rows[r].cells || boardElement.rows[r].cells.length !== 7) {
-            return;
-        }
-        // Check if any cell has animated spans (capture animation in progress)
-        for (let c = 0; c < 7; c++) {
-            const cell = boardElement.rows[r].cells[c];
-            if (cell.querySelector('span')) {
-                return;
-            }
-        }
-    }
-    
+// ----------------------------------------------------------------------------------------------
+// Start
+// ----------------------------------------------------------------------------------------------
+
+async function init() {
+    placePlayOptions();
+    phoneLayout.addEventListener('change', placePlayOptions);
+    const prefs = loadPrefs();
+    applyPrefs(prefs);
+    bindEvents();
+    if (!client) showStatus('The search worker could not start; open the page through a web server (python3 serve.py).', true, 0);
     try {
-        let evalValue;
-        
-        if (evalMode === 'heuristic') {
-            // Use traditional heuristic evaluation
-            // getAIBestMove is synchronous (calls C++ WASM) and sets computer_eval
-            getAIBestMove(boardElement, currentPlayer);
-            // computer_eval is set by getAIBestMove (from current player's perspective)
-            evalValue = computer_eval;
-            // Convert to attacker's perspective if needed
-            if (currentPlayer === 'defender') {
-                evalValue = -evalValue;
-            }
-        } else if (evalMode === 'nn') {
-            // Use raw NN value
-            if (!window.mctsAgent || !window.mctsAgent.isReady) {
-                return;
-            }
-            const nnResult = await getNNPolicy();
-            evalValue = nnResult.value;
-            // Convert to attacker's perspective if needed
-            if (currentPlayer === 'defender') {
-                evalValue = -evalValue;
-            }
-        } else if (evalMode === 'nn-mcts') {
-            // Use MCTS value
-            if (!window.mctsAgent || !window.mctsAgent.isReady) {
-                return;
-            }
-            
-            // If continuous eval is enabled, just use current root value
-            if (continuousEvalEnabled && continuousEvalRunning && window.mctsAgent.mcts.root) {
-                evalValue = window.mctsAgent.mcts.root.meanValue;
-                // Convert to attacker's perspective if needed
-                if (currentPlayer === 'defender') {
-                    evalValue = -evalValue;
-                }
-            } else {
-                // Show loading indicator while computing MCTS evaluation
-                setEvalLoading(true);
-                const mctsResult = await getMCTSResult();
-                setEvalLoading(false);
-                if (mctsResult && mctsResult.rootValue !== undefined) {
-                    // Get value from the cached root value
-                    evalValue = mctsResult.rootValue;
-                    // Convert to attacker's perspective if needed
-                    if (currentPlayer === 'defender') {
-                        evalValue = -evalValue;
-                    }
-                } else {
-                    console.error("[Eval] MCTS result invalid or root value not found");
-                    return;
-                }
-            }
-        }
-        
-        // Update the eval value display
-        const evalValueSpan = document.getElementById('eval-value');
-        const evalBar = document.getElementById('eval-bar');
-        
-        // Display the evaluation (always from attacker's perspective)
-        if (evalValue > 5) {
-            evalValueSpan.textContent = 'attacker\nwinning';
-        } else if (evalValue < -5) {
-            evalValueSpan.textContent = 'defender\nwinning';
-        } else {
-            evalValueSpan.textContent = evalValue.toFixed(2);
-        }
-        
-        // Update the visual bar position
-        // Clamp value between -1 and +1 for the bar
-        const clampedValue = Math.max(-1, Math.min(1, evalValue));
-        // Convert from [-1, 1] to [0%, 100%]
-        const barPosition = ((clampedValue + 1) / 2) * 100;
-        evalBar.style.left = `${barPosition}%`;
+        await loadManifest();
     } catch (error) {
-        console.error("[Eval] Error:", error);
+        console.error('[Models]', error);
+        showStatus(`Could not load the model list: ${error.message}`, true, 0);
     }
+    const size = SIZES.includes(prefs.size) ? prefs.size : 7;
+    const model = defaultModelFor(size);
+    let rules = null;
+    try {
+        if (prefs.rules && prefs.size === size) rules = Tafl.normalizeRules(prefs.rules);
+    } catch (e) {
+        rules = null;
+    }
+    if (!rules) rules = (model && modelRules(model.desc)) || FALLBACK_RULES[size];
+    newGame(size, rules, model);
 }
 
-/**
- * Visualize policy probabilities for selecting each piece
- */
-async function visualizePolicyForAllPieces(policyData) {
-    if (!policyData) return;
-    
-    clearPolicyVisualization();
-    
-    const encoder = new MoveEncoder();
-    const legalMoves = encoder.getAllLegalMoves(boardElement, currentPlayer);
-    
-    // Group moves by source piece
-    const pieceProbs = new Map(); // Map from "row,col" to probability/count
-    const pieceValues = new Map(); // Map from "row,col" to best value for moves from that piece
-    
-    for (const move of legalMoves) {
-        const moveIdx = encoder.encodeMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
-        const moveKey = `${move.fromRow},${move.fromCol},${move.toRow},${move.toCol}`;
-        let prob;
-        let value = 0;
-        
-        if (policyData.source === 'mcts' && policyData.visitCounts) {
-            // Use MCTS visit counts (raw counts, not normalized yet)
-            prob = policyData.visitCounts.get(moveIdx) || 0;
-            // Get value from MCTS child node
-            if (policyData.moveValues && policyData.moveValues.has(moveKey)) {
-                value = -policyData.moveValues.get(moveKey); // Negate because it's opponent's perspective
-            }
-        } else {
-            // Use NN policy (already converted to probabilities via softmax)
-            prob = policyData.policy[moveIdx] || 0;
-            // For NN, we'll use the base position value (approximation)
-            value = policyData.value || 0;
-        }
-        
-        const key = `${move.fromRow},${move.fromCol}`;
-        pieceProbs.set(key, (pieceProbs.get(key) || 0) + prob);
-        
-        // Track the best (maximum) value for moves from this piece
-        const currentBestValue = pieceValues.get(key);
-        if (currentBestValue === undefined || value > currentBestValue) {
-            pieceValues.set(key, value);
-        }
-    }
-    
-    // Normalize to get percentages
-    const total = Array.from(pieceProbs.values()).reduce((a, b) => a + b, 0);
-    
-    if (total > 0) {
-        for (const [key, probValue] of pieceProbs.entries()) {
-            const percentage = (probValue / total) * 100;
-            const value = pieceValues.get(key) || 0;
-            const [row, col] = key.split(',').map(Number);
-            const cell = boardElement.rows[row].cells[col];
-            showPolicyOnCell(cell, percentage, value);
-        }
-    }
-}
-
-/**
- * Visualize policy probabilities for moves from a selected piece
- */
-async function visualizePolicyForPiece(pieceCell, policyData) {
-    if (!policyData) return;
-    
-    clearPolicyVisualization();
-    
-    const encoder = new MoveEncoder();
-    const fromRow = pieceCell.parentNode.rowIndex;
-    const fromCol = pieceCell.cellIndex;
-    
-    const legalMoves = encoder.getAllLegalMoves(boardElement, currentPlayer)
-        .filter(m => m.fromRow === fromRow && m.fromCol === fromCol);
-    
-    // Get probabilities and values for each move
-    const moveProbs = new Map();
-    const moveValues = new Map();
-    
-    for (const move of legalMoves) {
-        const moveIdx = encoder.encodeMove(move.fromRow, move.fromCol, move.toRow, move.toCol);
-        const moveKey = `${move.fromRow},${move.fromCol},${move.toRow},${move.toCol}`;
-        let prob;
-        let value = 0;
-        
-        if (policyData.source === 'mcts' && policyData.visitCounts) {
-            prob = policyData.visitCounts.get(moveIdx) || 0;
-            // Get value from MCTS child node
-            if (policyData.moveValues && policyData.moveValues.has(moveKey)) {
-                value = -policyData.moveValues.get(moveKey); // Negate because it's opponent's perspective
-            }
-        } else {
-            prob = policyData.policy[moveIdx] || 0;
-            // For NN, use base position value (approximation)
-            value = policyData.value || 0;
-        }
-        
-        const key = `${move.toRow},${move.toCol}`;
-        moveProbs.set(key, prob);
-        moveValues.set(key, value);
-    }
-    
-    // Don't normalize - use global probabilities
-    // Calculate global total for percentage display
-    let globalTotal = 0;
-    if (policyData.source === 'mcts' && policyData.visitCounts) {
-        // Sum all visit counts across all moves
-        for (const count of policyData.visitCounts.values()) {
-            globalTotal += count;
-        }
-    } else {
-        // Sum all policy probabilities
-        globalTotal = policyData.policy.reduce((a, b) => a + b, 0);
-    }
-    
-    if (globalTotal > 0) {
-        for (const [key, probValue] of moveProbs.entries()) {
-            const percentage = (probValue / globalTotal) * 100;
-            const value = moveValues.get(key) || 0;
-            const [row, col] = key.split(',').map(Number);
-            const cell = boardElement.rows[row].cells[col];
-            showPolicyOnCell(cell, percentage, value);
-        }
-    }
-}
-
-/**
- * Display policy percentage and value on a cell
- */
-function showPolicyOnCell(cell, percentage, value) {
-    // Create or update overlay div
-    let overlay = cell.querySelector('.policy-overlay');
-    if (!overlay) {
-        overlay = document.createElement('div');
-        overlay.className = 'policy-overlay';
-        overlay.style.pointerEvents = 'none';  // Ensure clicks pass through
-        cell.appendChild(overlay);
-    }
-    
-    // Format: "+0.4 (31%)" or "-0.2 (15%)"
-    const sign = value >= 0 ? '+' : '';
-    const percentageInt = Math.round(percentage);
-    overlay.textContent = `${sign}${value.toFixed(1)} (${percentageInt}%)`;
-}
-
-/**
- * Clear all policy visualizations
- */
-function clearPolicyVisualization() {
-    const overlays = boardElement.querySelectorAll('.policy-overlay');
-    overlays.forEach(overlay => overlay.remove());
-}
+init();
