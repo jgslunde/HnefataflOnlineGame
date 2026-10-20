@@ -1,15 +1,26 @@
 /**
- * Tafl rules engine: Brandubh (7x7), Tablut (9x9) and Hnefatafl (11x11).
+ * Tafl rules engine for 7x7, 9x9 and 11x11 boards under named rule sets.
  *
- * A port of brandubh.py, tablut.py, hnefatafl.py and features.py from the training code
- * (github.com/jgslunde/Games, folder Hnefatafl_RL/). A network only knows the game as those engines
- * play it, so every rule here follows the Python code, including the rule switches and their
- * per-variant differences. Where this file and the Python code disagree, the Python code is right;
- * tests/test_engine.js replays reference games written by the Python engines.
+ * A port of tafl.py and features.py from the training code (github.com/jgslunde/Games, folder
+ * Hnefatafl_RL/). A network only knows the game as that engine plays it, so every rule here
+ * follows the Python code; where they disagree, the Python code is right. tests/test_engine.js
+ * replays reference games and rule positions written by the Python engine.
  *
- * Board: an Int8Array of N*N squares in row-major order, with the Python piece codes
- * 0 empty, 1 attacker, 2 defender, 3 king. Players: 0 attackers (they move first), 1 defenders.
+ * A rule set (see makeRules) fixes the starting position, who moves first, where the king escapes
+ * to, how he is captured, the throne, and the extra rules of some sets (encirclement, shieldwall,
+ * exit fort, what a repeated position means). Its fields keep the Python names, so the rules
+ * object of a model's .json file can be used as it is.
+ *
+ * Board: an Int8Array of N*N squares in row-major order (row 0 is the top row), with the Python
+ * piece codes 0 empty, 1 attacker, 2 defender, 3 king. Players: 0 attackers, 1 defenders.
  * A move is a packed integer (from << 8) | to, with squares numbered row * N + col.
+ *
+ * Shared by all rule sets: pieces move like rooks; a piece other than the king is captured when
+ * the opponent's move closes a sandwich (two enemies, or an enemy and a hostile square, on opposite
+ * sides); only the king may stop on the throne and on the corners (where those exist); a player
+ * who cannot move loses. After a move the checks run in this order (reference A7): captures, king
+ * on a goal square, king captured, exit fort (after a defenders' move), encirclement (after an
+ * attackers' move), repetition, no legal move for the side to move.
  *
  * Runs in the page, in the search Web Worker and in Node (tests).
  */
@@ -18,90 +29,157 @@
 
     const EMPTY = 0, ATTACKER = 1, DEFENDER = 2, KING = 3;
     const ATTACKER_PLAYER = 0, DEFENDER_PLAYER = 1;
+    const PIECE_CODES = { '.': EMPTY, A: ATTACKER, D: DEFENDER, K: KING };
 
-    // Directions in the order of the Python engines (and of the policy index): up, down, left, right
+    // Directions in the order of the Python engine (and of the policy index): up, down, left, right
     const DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
 
-    /**
-     * The game variants, one per board size. Start positions are copied from _setup_board() of the
-     * Python classes; the king always starts on the centre square.
-     *
-     * throneHostileToAttackers: in tablut.py and hnefatafl.py the empty throne is always hostile to
-     * attackers and throne_is_hostile only adds defenders and the king. In brandubh.py
-     * throne_is_hostile=False makes the empty throne hostile to nobody. The Python code differs
-     * here on purpose or by accident; we match it per variant and do not harmonise it.
-     */
-    const VARIANTS = {
-        7: {
-            id: 'brandubh', name: 'Brandubh', size: 7,
-            defenders: [[2, 3], [3, 2], [3, 4], [4, 3]],
-            attackers: [[0, 3], [3, 6], [6, 3], [3, 0], [1, 3], [3, 1], [3, 5], [5, 3]],
-            throneHostileToAttackers: false,
-            encirclement: false,
-            maxGameLength: 100,
-        },
-        9: {
-            id: 'tablut', name: 'Tablut', size: 9,
-            defenders: [[3, 4], [4, 3], [4, 5], [5, 4], [2, 4], [4, 2], [4, 6], [6, 4]],
-            attackers: [
-                [0, 3], [0, 4], [0, 5], [1, 4],
-                [3, 8], [4, 8], [5, 8], [4, 7],
-                [8, 3], [8, 4], [8, 5], [7, 4],
-                [3, 0], [4, 0], [5, 0], [4, 1],
-            ],
-            throneHostileToAttackers: true,
-            encirclement: false,
-            maxGameLength: 200,
-        },
-        11: {
-            id: 'hnefatafl', name: 'Hnefatafl', size: 11,
-            defenders: [
-                [4, 5], [5, 4], [5, 6], [6, 5],
-                [3, 5], [5, 3], [5, 7], [7, 5],
-                [4, 4], [4, 6], [6, 4], [6, 6],
-            ],
-            attackers: [
-                [0, 3], [0, 4], [0, 5], [0, 6], [0, 7], [1, 5],
-                [3, 10], [4, 10], [5, 10], [6, 10], [7, 10], [5, 9],
-                [10, 3], [10, 4], [10, 5], [10, 6], [10, 7], [9, 5],
-                [3, 0], [4, 0], [5, 0], [6, 0], [7, 0], [5, 1],
-            ],
-            throneHostileToAttackers: true,
-            // Attackers also win when no 4-connected path of non-attacker squares leads from the king
-            // to the edge (Hnefatafl._is_king_encircled)
-            encirclement: true,
-            maxGameLength: 300,
-        },
+    const KING_CAPTURE_RULES = {
+        weak: 'between two attackers like any other piece, everywhere',
+        weak_throne: 'like any other piece, but on the throne only from all four sides',
+        weak_near_throne: 'like any other piece, but on the throne from all four sides and next to it from the three other sides',
+        strong: 'from all four sides (next to the throne from the three other sides); never on the board edge',
     };
+    // What the repetition_count-th occurrence of a position means, whichever side made the move
+    const REPETITION_RULES = { defenders_lose: 'a win for the attackers', draw: 'a draw' };
 
-    // The constructor defaults of the Python game classes
-    const PYTHON_DEFAULT_RULES = { kingCapturePieces: 2, kingCanCapture: true, throneIsHostile: false, throneEnabled: true };
+    const RULE_FIELDS = ['name', 'description', 'setup', 'first_player', 'king_goal', 'king_capture',
+        'king_armed', 'throne', 'throne_hostile', 'encirclement', 'shieldwall', 'exit_fort', 'repetition',
+        'throne_passable', 'repetition_count'];
+    // Fields added after the first rule sets; model descriptions written before them leave them out
+    const RULE_DEFAULTS = { throne_passable: true, repetition_count: 3 };
+    const RULES_MARK = Symbol('taflRules');
 
     /**
-     * Rules as {kingCapturePieces, kingCanCapture, throneIsHostile, throneEnabled}. Accepts these
-     * names or the Python ones (king_capture_pieces, ...) as written in a model's .json file.
+     * A rule set from its fields (as Python's Rules; missing later fields get their defaults).
+     * Validated like Rules.__post_init__. The result is frozen and carries board_size.
      */
-    function normalizeRules(rules) {
-        rules = rules || {};
-        const pick = (camel, snake) => (rules[camel] !== undefined ? rules[camel]
-            : rules[snake] !== undefined ? rules[snake] : PYTHON_DEFAULT_RULES[camel]);
-        const kingCapturePieces = Number(pick('kingCapturePieces', 'king_capture_pieces'));
-        if (![2, 3, 4].includes(kingCapturePieces)) {
-            throw new Error(`king_capture_pieces must be 2, 3 or 4, not ${kingCapturePieces}`);
+    function makeRules(data) {
+        const fields = { ...RULE_DEFAULTS, ...data };
+        for (const name of RULE_FIELDS) {
+            if (fields[name] === undefined) throw new Error(`Rule set ${fields.name || '?'}: missing field '${name}'`);
         }
-        return Object.freeze({
-            kingCapturePieces,
-            kingCanCapture: Boolean(pick('kingCanCapture', 'king_can_capture')),
-            throneIsHostile: Boolean(pick('throneIsHostile', 'throne_is_hostile')),
-            throneEnabled: Boolean(pick('throneEnabled', 'throne_enabled')),
-        });
+        const setup = Array.from(fields.setup, String);
+        const n = setup.length;
+        const label = fields.name;
+        if (n % 2 === 0 || setup.some(row => row.length !== n) || !(n in VARIANTS)) {
+            throw new Error(`${label}: the setup must be a 7x7, 9x9 or 11x11 square`);
+        }
+        if (setup[(n - 1) / 2][(n - 1) / 2] !== 'K') throw new Error(`${label}: the king must start on the centre square`);
+        if (setup.some(row => [...row].some(ch => !(ch in PIECE_CODES)))) throw new Error(`${label}: unknown piece in the setup`);
+        if (!['attackers', 'defenders'].includes(fields.first_player) || !['corner', 'edge'].includes(fields.king_goal)) {
+            throw new Error(`${label}: invalid first_player or king_goal`);
+        }
+        if (!(fields.king_capture in KING_CAPTURE_RULES) || !(fields.repetition in REPETITION_RULES)) {
+            throw new Error(`${label}: invalid king_capture or repetition`);
+        }
+        const rules = {};
+        for (const name of RULE_FIELDS) rules[name] = fields[name];
+        for (const name of ['king_armed', 'throne', 'throne_hostile', 'encirclement', 'shieldwall', 'exit_fort', 'throne_passable']) {
+            rules[name] = Boolean(rules[name]);
+        }
+        rules.repetition_count = Number(rules.repetition_count);
+        rules.setup = Object.freeze(setup);
+        rules.board_size = n;
+        Object.defineProperty(rules, RULES_MARK, { value: true });
+        return Object.freeze(rules);
+    }
+
+    /** A rule set from a rules object, the name of a set in RULESETS, or the fields of one. */
+    function normalizeRules(rules) {
+        if (typeof rules === 'string') {
+            if (!RULESETS[rules]) throw new Error(`Unknown rule set '${rules}'`);
+            return RULESETS[rules];
+        }
+        if (rules && rules[RULES_MARK]) return rules;
+        return makeRules(rules || {});
+    }
+
+    const rulesKeys = new WeakMap();
+
+    /** A string that is equal for two rule sets exactly when they play the same game. */
+    function rulesKey(rules) {
+        const r = normalizeRules(rules);
+        let key = rulesKeys.get(r);
+        if (key === undefined) {
+            key = RULE_FIELDS.filter(f => f !== 'name' && f !== 'description')
+                .map(f => (f === 'setup' ? r.setup.join('/') : String(r[f]))).join('|');
+            rulesKeys.set(r, key);
+        }
+        return key;
     }
 
     function rulesEqual(a, b) {
-        a = normalizeRules(a);
-        b = normalizeRules(b);
-        return a.kingCapturePieces === b.kingCapturePieces && a.kingCanCapture === b.kingCanCapture &&
-            a.throneIsHostile === b.throneIsHostile && a.throneEnabled === b.throneEnabled;
+        return rulesKey(a) === rulesKey(b);
+    }
+
+    const replace = (rules, changes) => makeRules({ ...rules, ...changes });
+
+    // The board sizes, with the defenders-win share of human games noted in RULESETS.md per set
+    const VARIANTS = { 7: { size: 7 }, 9: { size: 9 }, 11: { size: 11 } };
+
+    const BRANDUBH_SETUP = ['...A...', '...A...', '...D...', 'AADKDAA', '...D...', '...A...', '...A...'];
+    const TABLUT_SETUP = ['...AAA...', '....A....', '....D....', 'A...D...A', 'AADDKDDAA', 'A...D...A',
+        '....D....', '....A....', '...AAA...'];
+    const COPENHAGEN_SETUP = ['...AAAAA...', '.....A.....', '...........', 'A....D....A', 'A...DDD...A',
+        'AA.DDKDD.AA', 'A...DDD...A', 'A....D....A', '...........', '.....A.....', '...AAAAA...'];
+    const SEA_BATTLE_9X9_SETUP = ['....A....', '.A..A..A.', '..A...A..', '...DDD...', 'AA.DKD.AA',
+        '...DDD...', '..A...A..', '.A..A..A.', '....A....'];
+    const LEWIS_CROSS_SETUP = ['....AAA....', '....AAA....', '.....D.....', '.....D.....', 'AA...D...AA',
+        'AADDDKDDDAA', 'AA...D...AA', '.....D.....', '.....D.....', '....AAA....', '....AAA....'];
+    const BELL_SETUP = ['....AAA....', '....A.A....', '.....A.....', '.....D.....', 'AA..DDD..AA',
+        'A.ADDKDDA.A', 'AA..DDD..AA', '.....D.....', '.....A.....', '....A.A....', '....AAA....'];
+
+    const RULESETS = {};
+    {
+        const BRANDUBH = makeRules({
+            name: 'brandubh', description: 'Brandubh 2 (World Tafl Federation, 2020), the most played 7x7 rules',
+            setup: BRANDUBH_SETUP, first_player: 'attackers', king_goal: 'corner', king_capture: 'weak_throne',
+            king_armed: true, throne: true, throne_hostile: true, encirclement: true, shieldwall: false,
+            exit_fort: false, repetition: 'defenders_lose',
+        });
+        const SAMI_TABLUT = makeRules({
+            name: 'sami_tablut', description: 'Sami Tablut 9x9 as in the WTF championship (Saami Tablut-w, defenders first)',
+            setup: TABLUT_SETUP, first_player: 'defenders', king_goal: 'edge', king_capture: 'weak_near_throne',
+            king_armed: true, throne: true, throne_hostile: true, encirclement: true, shieldwall: false,
+            exit_fort: false, repetition: 'defenders_lose',
+        });
+        const COPENHAGEN = makeRules({
+            name: 'copenhagen', description: 'Copenhagen Hnefatafl 11x11 (World Tafl Federation, 2012), the most played 11x11 rules',
+            setup: COPENHAGEN_SETUP, first_player: 'attackers', king_goal: 'corner', king_capture: 'strong',
+            king_armed: true, throne: true, throne_hostile: true, encirclement: true, shieldwall: true,
+            exit_fort: true, repetition: 'defenders_lose',
+        });
+        const sets = [
+            BRANDUBH,
+            replace(BRANDUBH, { name: 'walker_brandub', king_capture: 'weak', throne_hostile: false,
+                description: "Walker's Brandub 7x7 (2011), as played on aagenielsen.dk" }),
+            replace(BRANDUBH, { name: 'brandubh_2_5w', first_player: 'defenders', throne_passable: false,
+                repetition_count: 5, description: 'Brandubh 2.5W 7x7 (draft of February 2026; start position assumed to be that of Brandubh 2)' }),
+            SAMI_TABLUT,
+            makeRules({
+                name: 'sea_battle_9x9', description: 'Sea Battle 9x9, Nielsen setup', setup: SEA_BATTLE_9X9_SETUP,
+                first_player: 'attackers', king_goal: 'edge', king_capture: 'strong', king_armed: false,
+                throne: false, throne_hostile: false, encirclement: true, shieldwall: false, exit_fort: false,
+                repetition: 'defenders_lose',
+            }),
+            makeRules({
+                name: 'market_hnefatafl', description: "Market Hnefatafl 9x9, the beginners' version of Sami Tablut",
+                setup: TABLUT_SETUP, first_player: 'defenders', king_goal: 'edge', king_capture: 'weak',
+                king_armed: true, throne: false, throne_hostile: false, encirclement: false, shieldwall: false,
+                exit_fort: false, repetition: 'defenders_lose',
+            }),
+            COPENHAGEN,
+            replace(SAMI_TABLUT, { name: 'historical_lewis', setup: LEWIS_CROSS_SETUP,
+                description: 'Historical 11x11 (Tawlbwrdd), Lewis cross setup, as in the WTF championship' }),
+            replace(SAMI_TABLUT, { name: 'historical_bell', setup: BELL_SETUP,
+                description: 'Historical 11x11 (Tawlbwrdd), Bell setup, defenders first' }),
+            replace(SAMI_TABLUT, { name: 'simple_tafl', setup: LEWIS_CROSS_SETUP, throne: false,
+                throne_hostile: false, description: 'Simple Tafl 11x11: historical rules, Lewis cross setup, no throne, defenders first' }),
+            replace(COPENHAGEN, { name: 'fetlar', shieldwall: false, exit_fort: false, repetition: 'draw',
+                description: 'Fetlar Hnefatafl 11x11 (2007)' }),
+        ];
+        for (const rules of sets) RULESETS[rules.name] = rules;
     }
 
     // ------------------------------------------------------------------------------------------
@@ -120,30 +198,30 @@
     const geometries = {};
 
     /**
-     * Corner and throne squares of a board size, and the Zobrist keys of its positions. A position
-     * key is a 53-bit integer: 21 bits from zHi and 32 from zLo. Two different positions share a key
-     * with probability about 2^-53, far below anything a game or a search can reach.
+     * Corner, centre and edge squares of a board size, and the Zobrist keys of its positions. A
+     * position key is a 53-bit integer: 21 bits from zHi and 32 from zLo. Two different positions
+     * share a key with probability about 2^-53, far below anything a game or a search can reach.
      */
     function geometry(N) {
         if (geometries[N]) return geometries[N];
         const NN = N * N;
         const corners = [0, N - 1, N * (N - 1), NN - 1];
-        const isCorner = new Uint8Array(NN);
-        for (const sq of corners) isCorner[sq] = 1;
+        const cornerMask = new Uint8Array(NN);
+        for (const sq of corners) cornerMask[sq] = 1;
+        const isEdge = new Uint8Array(NN);
+        for (let sq = 0; sq < NN; sq++) {
+            const r = (sq / N) | 0, c = sq % N;
+            isEdge[sq] = (r === 0 || r === N - 1 || c === 0 || c === N - 1) ? 1 : 0;
+        }
         const rand = mulberry32(0x7AF1 + N);
         const zHi = new Int32Array(NN * 4), zLo = new Int32Array(NN * 4);
         for (let i = 0; i < NN * 4; i++) {
             zHi[i] = rand() & 0x1FFFFF;
             zLo[i] = rand() | 0;
         }
-        const isEdge = new Uint8Array(NN);
-        for (let sq = 0; sq < NN; sq++) {
-            const r = (sq / N) | 0, c = sq % N;
-            isEdge[sq] = (r === 0 || r === N - 1 || c === 0 || c === N - 1) ? 1 : 0;
-        }
         geometries[N] = {
-            N, NN, corners, isCorner, isEdge,
-            throne: (NN - 1) / 2,
+            N, NN, corners, cornerMask, noCorners: new Uint8Array(NN), isEdge,
+            center: (NN - 1) / 2,
             zHi, zLo,
             playerHi: rand() & 0x1FFFFF,
             playerLo: rand() | 0,
@@ -192,42 +270,44 @@
 
     class TaflGame {
         /**
-         * A new game in the start position, attackers to move.
-         * @param {number} size 7, 9 or 11
-         * @param {object} rules see normalizeRules (defaults: those of the Python constructors)
+         * A new game in the rule set's start position.
+         * @param {string|object} rules a rule set name (see RULESETS), a rules object, or its fields
          */
-        constructor(size = 7, rules = {}) {
-            const variant = VARIANTS[size];
-            if (!variant) throw new Error(`No Tafl variant with a ${size}x${size} board`);
-            this.N = size;
-            this.variant = variant;
-            this.geo = geometry(size);
-            this.rules = normalizeRules(rules);
-            this.board = new Int8Array(size * size);
+        constructor(rules = 'copenhagen') {
+            this._init(normalizeRules(rules));
+            const N = this.N;
+            this.rules.setup.forEach((row, r) => {
+                for (let c = 0; c < N; c++) this.board[r * N + c] = PIECE_CODES[row[c]];
+            });
+            this.currentPlayer = this.rules.first_player === 'attackers' ? ATTACKER_PLAYER : DEFENDER_PLAYER;
+            this._computeHash();
+            this.repKeys = [this.positionKey()];
+        }
+
+        _init(rules) {
+            this.rules = rules;
+            const N = this.N = rules.board_size;
+            this.geo = geometry(N);
+            // Corner squares exist only where the king escapes to a corner; the centre is a throne
+            // only in sets with a throne
+            this.isCorner = rules.king_goal === 'corner' ? this.geo.cornerMask : this.geo.noCorners;
+            this.corners = rules.king_goal === 'corner' ? this.geo.corners : [];
+            this.throneSq = rules.throne ? this.geo.center : -1;
+            this.board = new Int8Array(N * N);
             this.currentPlayer = ATTACKER_PLAYER;
             this.gameOver = false;
-            this.winner = null;
+            this.winner = null;      // stays null for a draw
+            this.endReason = null;   // escape, capture, exit_fort, encirclement, repetition, no_moves
             this.moveCount = 0;
             // Keys of the positions since the last capture, oldest first, the current one last. A
             // capture removes pieces for good, so no earlier position can occur again; for the
             // repetition rule these are all the positions that matter.
             this.repKeys = [];
-            this.repHasDuplicate = false;
             // Boards of the previous positions, oldest first (for history input planes), at most
             // keepBoards of them
             this.prevBoards = [];
             this.keepBoards = 0;
             this._legal = null;
-            this._setupBoard();
-            this._recordPosition(true);
-        }
-
-        _setupBoard() {
-            const N = this.N, v = this.variant;
-            this.board[this.geo.throne] = KING;
-            for (const [r, c] of v.defenders) this.board[r * N + c] = DEFENDER;
-            for (const [r, c] of v.attackers) this.board[r * N + c] = ATTACKER;
-            this._computeHash();
         }
 
         _computeHash() {
@@ -248,20 +328,14 @@
             this.hashLo = lo;
         }
 
+        _flip(sq, piece) {
+            this.hashHi ^= this.geo.zHi[sq * 4 + piece];
+            this.hashLo ^= this.geo.zLo[sq * 4 + piece];
+        }
+
         /** Key of the position (board and player to move), as used by the repetition rule. */
         positionKey() {
             return this.hashHi * 4294967296 + (this.hashLo >>> 0);
-        }
-
-        _recordPosition(reset) {
-            const key = this.positionKey();
-            if (reset) {
-                this.repKeys = [key];
-                this.repHasDuplicate = false;
-            } else {
-                if (!this.repHasDuplicate && this.repKeys.includes(key)) this.repHasDuplicate = true;
-                this.repKeys.push(key);
-            }
         }
 
         /** How often the current position has occurred (1 the first time). */
@@ -274,34 +348,22 @@
 
         clone() {
             const g = Object.create(TaflGame.prototype);
-            g.N = this.N;
-            g.variant = this.variant;
-            g.geo = this.geo;
-            g.rules = this.rules;
+            Object.assign(g, this);
             g.board = this.board.slice();
-            g.currentPlayer = this.currentPlayer;
-            g.gameOver = this.gameOver;
-            g.winner = this.winner;
-            g.moveCount = this.moveCount;
-            g.hashHi = this.hashHi;
-            g.hashLo = this.hashLo;
             g.repKeys = this.repKeys.slice();
-            g.repHasDuplicate = this.repHasDuplicate;
             g.prevBoards = this.prevBoards.slice();  // the stored boards are never changed
-            g.keepBoards = this.keepBoards;
-            g._legal = this._legal;                 // never changed in place either
-            return g;
+            return g;                               // rules, geometry and _legal are shared, never changed
         }
 
         /** A plain object that survives postMessage; TaflGame.fromState rebuilds the game. */
         toState() {
             return {
-                size: this.N,
-                rules: { ...this.rules },
+                rules: { ...this.rules, setup: [...this.rules.setup] },
                 board: this.board.slice(),
                 currentPlayer: this.currentPlayer,
                 gameOver: this.gameOver,
                 winner: this.winner,
+                endReason: this.endReason,
                 moveCount: this.moveCount,
                 repKeys: this.repKeys.slice(),
                 prevBoards: this.prevBoards.map(b => b.slice()),
@@ -310,32 +372,41 @@
         }
 
         static fromState(state) {
-            const g = new TaflGame(state.size, state.rules);
+            const g = Object.create(TaflGame.prototype);
+            g._init(normalizeRules(state.rules));
             g.board = Int8Array.from(state.board);
             g.currentPlayer = state.currentPlayer;
             g.gameOver = Boolean(state.gameOver);
             g.winner = state.winner === undefined ? null : state.winner;
+            g.endReason = state.endReason || null;
             g.moveCount = state.moveCount || 0;
             g._computeHash();
             g.repKeys = state.repKeys && state.repKeys.length ? state.repKeys.slice() : [g.positionKey()];
-            g.repHasDuplicate = new Set(g.repKeys).size < g.repKeys.length;
             g.prevBoards = (state.prevBoards || []).map(b => Int8Array.from(b));
             g.keepBoards = state.keepBoards || 0;
-            g._legal = null;
             return g;
         }
 
         /**
-         * A game in a given position, without history (as if it were the start position). For tests
-         * and set-up positions. board: N*N piece codes, flat or as rows.
+         * A game in a given position (for tests and set-up positions). board: N*N piece codes, flat or
+         * as rows. history: the earlier positions, oldest first, as [{board, player}], for the
+         * repetition rule and the history planes (default: none, as if the game started here).
          */
-        static fromBoard(size, rules, board, currentPlayer = ATTACKER_PLAYER) {
-            const g = new TaflGame(size, rules);
+        static fromPosition(rules, board, currentPlayer, history = []) {
+            const g = Object.create(TaflGame.prototype);
+            g._init(normalizeRules(rules));
+            g.currentPlayer = currentPlayer;
+            g.repKeys = history.map(({ board: b, player }) => {
+                g.board = Int8Array.from(Array.isArray(b[0]) ? b.flat() : b);
+                g.currentPlayer = player;
+                g._computeHash();
+                return g.positionKey();
+            });
+            g.prevBoards = history.map(({ board: b }) => Int8Array.from(Array.isArray(b[0]) ? b.flat() : b));
             g.board = Int8Array.from(Array.isArray(board[0]) ? board.flat() : board);
             g.currentPlayer = currentPlayer;
             g._computeHash();
-            g._recordPosition(true);
-            g._legal = null;
+            g.repKeys.push(g.positionKey());
             return g;
         }
 
@@ -348,18 +419,21 @@
             return player === ATTACKER_PLAYER ? p === ATTACKER : (p === DEFENDER || p === KING);
         }
 
+        _inside(r, c) {
+            return r >= 0 && r < this.N && c >= 0 && c < this.N;
+        }
+
         // --------------------------------------------------------------------------------------
-        // Move generation (Python: get_legal_moves, _get_piece_moves, _would_cause_repetition)
+        // Move generation (Python: get_legal_moves)
         // --------------------------------------------------------------------------------------
 
         /**
-         * All legal moves of the player to move, in the order of the Python engines (squares in
-         * row-major order; per piece up, down, left, right; nearest square first). Moves that
-         * would create a position for the third time are left out. The returned array is cached
-         * and shared: do not change it.
+         * All legal moves of the player to move, in the order of the Python engine (squares in
+         * row-major order; per piece up, down, left, right; nearest square first). The returned
+         * array is cached and shared: do not change it.
          */
         legalMoves() {
-            if (this._legal === null) this._legal = this._generateMoves();
+            if (this._legal === null) this._legal = this._slides(this.currentPlayer === ATTACKER_PLAYER ? 1 : 2, null);
             return this._legal;
         }
 
@@ -372,26 +446,21 @@
             return this.legalMoves().filter(m => (m >> 8) === sq);
         }
 
-        /** Whether a move is illegal only because it would create a position for the third time. */
-        isBlockedByRepetition(move) {
-            if (!this.repHasDuplicate || this.isLegalMove(move)) return false;
-            const g = this.clone();
-            g.repHasDuplicate = false;
-            g._legal = null;
-            return g.legalMoves().includes(move);
-        }
-
-        _generateMoves() {
+        /**
+         * The rook slides of pieces: side 1 attackers, 2 defenders and king, 3 all pieces. Pieces
+         * other than the king never stop on a corner or the throne; they pass over the empty throne
+         * only where the rules allow it. With `visit`, calls visit(piece, target) instead of
+         * collecting moves.
+         */
+        _slides(side, visit) {
             const N = this.N, b = this.board, NN = N * N;
-            const { isCorner, throne } = this.geo;
-            const throneOn = this.rules.throneEnabled;
-            const attackersMove = this.currentPlayer === ATTACKER_PLAYER;
-            // A move can only give a third occurrence if some position has occurred twice already
-            const checkRepetition = this.repHasDuplicate;
+            const isCorner = this.isCorner, throne = this.throneSq, passable = this.rules.throne_passable;
             const moves = [];
             for (let sq = 0; sq < NN; sq++) {
                 const p = b[sq];
-                if (attackersMove ? p !== ATTACKER : (p !== DEFENDER && p !== KING)) continue;
+                if (p === EMPTY) continue;
+                if (side === 1 && p !== ATTACKER) continue;
+                if (side === 2 && p === ATTACKER) continue;
                 const isKing = p === KING;
                 const r = (sq / N) | 0, c = sq % N;
                 for (let d = 0; d < 4; d++) {
@@ -400,15 +469,17 @@
                     while (nr >= 0 && nr < N && nc >= 0 && nc < N) {
                         const t = nr * N + nc;
                         if (b[t] !== EMPTY) break;
-                        // Only the king may enter a corner (a corner is at the end of its line)
-                        if (isCorner[t] && !isKing) break;
-                        // Only the king may stop on the throne; others may pass over it when it is empty
-                        if (throneOn && t === throne && !isKing) {
-                            nr += dr;
-                            nc += dc;
-                            continue;
+                        if (!isKing) {
+                            if (isCorner[t]) break;  // corners end a ray, so nothing lies beyond
+                            if (t === throne) {
+                                if (!passable) break;
+                                nr += dr;
+                                nc += dc;
+                                continue;
+                            }
                         }
-                        if (!checkRepetition || !this._wouldRepeat(sq, t, p)) moves.push((sq << 8) | t);
+                        if (visit) visit(p, t);
+                        else moves.push((sq << 8) | t);
                         nr += dr;
                         nc += dc;
                     }
@@ -417,207 +488,271 @@
             return moves;
         }
 
-        /**
-         * Whether moving piece p from `from` to `to` would give a position that has occurred twice
-         * already. As in Python, the position after the move is first compared without captures; a
-         * capturing move never repeats a position, because pieces are never added.
-         */
-        _wouldRepeat(from, to, p) {
-            const { zHi, zLo, playerHi, playerLo } = this.geo;
-            const hi = this.hashHi ^ zHi[from * 4 + p] ^ zHi[to * 4 + p] ^ playerHi;
-            const lo = this.hashLo ^ zLo[from * 4 + p] ^ zLo[to * 4 + p] ^ playerLo;
-            const key = hi * 4294967296 + (lo >>> 0);
-            let count = 0;
-            for (const k of this.repKeys) if (k === key) count++;
-            if (count < 2) return false;
-            const b = this.board;
-            b[from] = EMPTY;
-            b[to] = p;
-            const captures = this._captureTargets(to);
-            b[to] = EMPTY;
-            b[from] = p;
-            return captures.length === 0;
-        }
-
         // --------------------------------------------------------------------------------------
-        // Making a move (Python: make_move, _check_captures, _check_game_over)
+        // Making a move (Python: make_move)
         // --------------------------------------------------------------------------------------
 
         /**
-         * Make a move (it must be legal; see isLegalMove). Returns the captured squares, or null if
-         * the game is already over.
+         * Make a move (it must be legal; see isLegalMove) and decide whether the game is over.
+         * Returns the captured squares (the king's included), or null if the game was already over.
          */
         makeMove(move) {
             if (this.gameOver) return null;
             const from = move >> 8, to = move & 255;
             const b = this.board;
-            const p = b[from];
+            const piece = b[from];
             if (this.keepBoards > 0) {
                 this.prevBoards.push(b.slice());
                 if (this.prevBoards.length > this.keepBoards) this.prevBoards.shift();
             }
-            const { zHi, zLo } = this.geo;
             b[from] = EMPTY;
-            b[to] = p;
-            this.hashHi ^= zHi[from * 4 + p] ^ zHi[to * 4 + p];
-            this.hashLo ^= zLo[from * 4 + p] ^ zLo[to * 4 + p];
+            b[to] = piece;
+            this._flip(from, piece);
+            this._flip(to, piece);
             this.moveCount++;
 
-            const captured = this._captureTargets(to);
+            const { captured, kingCaptured } = this._findCaptures(to);
+            const removed = [];
             for (const sq of captured) {
-                const q = b[sq];
-                if (q === KING) {
-                    this.gameOver = true;
-                    this.winner = ATTACKER_PLAYER;
-                }
-                this.hashHi ^= zHi[sq * 4 + q];
-                this.hashLo ^= zLo[sq * 4 + q];
+                if (b[sq] === EMPTY) continue;  // the same piece twice (custodian and shieldwall)
+                this._flip(sq, b[sq]);
                 b[sq] = EMPTY;
+                removed.push(sq);
             }
-
-            this.currentPlayer = 1 - this.currentPlayer;
+            const mover = this.currentPlayer;
+            this.currentPlayer = 1 - mover;
             this.hashHi ^= this.geo.playerHi;
             this.hashLo ^= this.geo.playerLo;
             this._legal = null;
-            this._recordPosition(captured.length > 0);
-            this._checkGameOver();
-            return captured;
-        }
+            // As in Python, the position is recorded before a captured king leaves the board
+            const key = this.positionKey();
+            if (removed.length) this.repKeys = [key];
+            else this.repKeys.push(key);
 
-        static _friendly(p1, p2) {
-            if (p1 === EMPTY || p2 === EMPTY) return false;
-            return (p1 === ATTACKER) === (p2 === ATTACKER);
-        }
-
-        /**
-         * The squares whose pieces the piece that just moved to `to` captures (custodian captures;
-         * the king by the king_capture_pieces rule). The board is not changed. The Python code
-         * removes captured pieces one direction at a time; the four directions look at disjoint
-         * squares, so collecting first and removing afterwards gives the same result.
-         */
-        _captureTargets(to) {
-            const N = this.N, b = this.board;
-            const piece = b[to];
-            const out = [];
-            // A king that may not capture never captures when it moves
-            if (piece === KING && !this.rules.kingCanCapture) return out;
-            const r = (to / N) | 0, c = to % N;
-            for (let d = 0; d < 4; d++) {
-                const dr = DIRS[d][0], dc = DIRS[d][1];
-                const nr = r + dr, nc = c + dc;
-                if (nr < 0 || nr >= N || nc < 0 || nc >= N) continue;
-                const n = nr * N + nc;
-                const enemy = b[n];
-                if (enemy === EMPTY || TaflGame._friendly(piece, enemy)) continue;
-                const nr2 = nr + dr, nc2 = nc + dc;
-                const inside2 = nr2 >= 0 && nr2 < N && nc2 >= 0 && nc2 < N;
-                const n2 = nr2 * N + nc2;
-                if (enemy === KING) {
-                    if (this.rules.kingCapturePieces === 2) {
-                        // Sandwich completed in this direction
-                        if (inside2 && (b[n2] === ATTACKER || this._isHostile(n2, KING))) out.push(n);
-                    } else if (this._isKingCaptured(n)) {
-                        out.push(n);
-                    }
-                } else {
-                    if (!inside2) continue;
-                    const opposite = b[n2];
-                    // A king that may not capture is not the second capturing piece either
-                    const friendlyAnvil = TaflGame._friendly(piece, opposite) &&
-                        (opposite !== KING || this.rules.kingCanCapture);
-                    if (friendlyAnvil || this._isHostile(n2, enemy)) out.push(n);
-                }
+            if (piece === KING && this._isGoal(to)) {
+                this._end(DEFENDER_PLAYER, 'escape');
+            } else if (kingCaptured) {
+                const king = b.indexOf(KING);
+                this._flip(king, KING);
+                b[king] = EMPTY;
+                removed.push(king);
+                this._end(ATTACKER_PLAYER, 'capture');
+            } else if (this.rules.exit_fort && mover === DEFENDER_PLAYER && this.isKingInExitFort()) {
+                this._end(DEFENDER_PLAYER, 'exit_fort');
+            } else if (this.rules.encirclement && mover === ATTACKER_PLAYER && this.areDefendersEncircled()) {
+                this._end(ATTACKER_PLAYER, 'encirclement');
+            } else if (this.repetitionCount() >= this.rules.repetition_count) {
+                this._end(this.rules.repetition === 'defenders_lose' ? ATTACKER_PLAYER : null, 'repetition');
+            } else if (this.legalMoves().length === 0) {
+                this._end(mover, 'no_moves');
             }
-            return out;
+            return removed;
         }
 
-        /**
-         * Whether a square counts as an enemy of the piece type `target` in a capture. Corners
-         * always do; an occupied throne never does; the empty throne depends on the variant (see
-         * VARIANTS) and throne_is_hostile.
-         */
-        _isHostile(sq, target) {
-            if (this.geo.isCorner[sq]) return true;
-            if (this.rules.throneEnabled && sq === this.geo.throne) {
-                if (this.board[sq] !== EMPTY) return false;
-                if (this.variant.throneHostileToAttackers && target === ATTACKER) return true;
-                return this.rules.throneIsHostile;
-            }
+        _end(winner, reason) {
+            this.gameOver = true;
+            this.winner = winner;
+            this.endReason = reason;
+        }
+
+        _isGoal(sq) {
+            return this.rules.king_goal === 'corner' ? this.isCorner[sq] === 1 : this.geo.isEdge[sq] === 1;
+        }
+
+        // --------------------------------------------------------------------------------------
+        // Captures (Python: _closes_sandwich, _find_captures, _king_captured, _shieldwall_captures)
+        // --------------------------------------------------------------------------------------
+
+        /** Whether square sq closes a sandwich against a `target` piece (not the king). */
+        _closesSandwich(sq, target) {
+            const p = this.board[sq];
+            if (target === ATTACKER && (p === DEFENDER || (p === KING && this.rules.king_armed))) return true;
+            if (target === DEFENDER && p === ATTACKER) return true;
+            if (this.isCorner[sq]) return true;
+            if (this.rules.throne && this.rules.throne_hostile && sq === this.throneSq) return target === ATTACKER || p === EMPTY;
             return false;
         }
 
-        /** Whether the king on square k is captured under king_capture_pieces (Python: _is_king_captured). */
-        _isKingCaptured(k) {
+        /** The captures made by the piece that just moved to `to`, without changing the board. */
+        _findCaptures(to) {
             const N = this.N, b = this.board;
-            const r = (k / N) | 0, c = k % N;
-            const hostile = (sq) => b[sq] === ATTACKER || this._isHostile(sq, KING);
-            const kcp = this.rules.kingCapturePieces;
-            if (kcp === 2) {
-                if (c > 0 && c < N - 1 && hostile(k - 1) && hostile(k + 1)) return true;
-                if (r > 0 && r < N - 1 && hostile(k - N) && hostile(k + N)) return true;
-                return false;
-            }
-            if (kcp === 3) {
-                // Three of the sides on the board
-                let count = 0;
-                for (const [dr, dc] of DIRS) {
-                    const nr = r + dr, nc = c + dc;
-                    if (nr >= 0 && nr < N && nc >= 0 && nc < N && hostile(nr * N + nc)) count++;
+            const piece = b[to];
+            const captured = [];
+            let kingCaptured = false;
+            if (piece === KING && !this.rules.king_armed) return { captured, kingCaptured };
+            const attacking = piece === ATTACKER;
+            const r = (to / N) | 0, c = to % N;
+            for (let d = 0; d < 4; d++) {
+                const dr = DIRS[d][0], dc = DIRS[d][1];
+                const r1 = r + dr, c1 = c + dc, r2 = r + 2 * dr, c2 = c + 2 * dc;
+                if (!this._inside(r1, c1)) continue;
+                const n1 = r1 * N + c1;
+                const target = b[n1];
+                if (target === EMPTY || (target === ATTACKER) === attacking) continue;
+                if (target === KING) {
+                    kingCaptured = kingCaptured || this._isKingCaptured(n1, dr, dc);
+                } else if (this._inside(r2, c2) && this._closesSandwich(r2 * N + c2, target)) {
+                    captured.push(n1);
                 }
-                return count >= 3;
             }
-            // All four sides; the board edge counts as a hostile side
-            for (const [dr, dc] of DIRS) {
-                const nr = r + dr, nc = c + dc;
-                if (nr < 0 || nr >= N || nc < 0 || nc >= N) continue;
-                if (!hostile(nr * N + nc)) return false;
+            if (this.rules.shieldwall && this.geo.isEdge[to]) captured.push(...this._shieldwallCaptures(to));
+            return { captured, kingCaptured };
+        }
+
+        /**
+         * Whether the king on square k is captured by the attacker that just moved next to him,
+         * coming from direction (-dr, -dc).
+         */
+        _isKingCaptured(k, dr, dc) {
+            const N = this.N, b = this.board, rule = this.rules.king_capture;
+            const r = (k / N) | 0, c = k % N, t = (N - 1) / 2;
+            const onThrone = this.rules.throne && k === this.throneSq;
+            const nextToThrone = this.rules.throne && Math.abs(r - t) + Math.abs(c - t) === 1;
+            const fourSides = rule === 'strong' || (rule === 'weak_throne' && onThrone) ||
+                (rule === 'weak_near_throne' && (onThrone || nextToThrone));
+            if (!fourSides) {
+                // Two opposite sides: the attacker that moved, and an attacker or a corner beyond
+                const r2 = r + dr, c2 = c + dc;
+                return this._inside(r2, c2) && (b[r2 * N + c2] === ATTACKER || this.isCorner[r2 * N + c2] === 1);
+            }
+            if (this.geo.isEdge[k]) return false;  // the edge never counts as a side
+            // Attackers on all four sides; the empty throne next to the king counts as one of them
+            for (const [ar, ac] of DIRS) {
+                const n = (r + ar) * N + (c + ac);
+                if (b[n] !== ATTACKER && !(this.rules.throne && n === this.throneSq)) return false;
             }
             return true;
         }
 
-        /** Whether no 4-connected path of non-attacker squares leads from the king to the edge. */
-        isKingEncircled() {
-            const king = this.kingSquare();
-            if (king < 0) return false;
-            const region = kingRegion(this);
-            for (let sq = 0; sq < region.length; sq++) if (region[sq] && this.geo.isEdge[sq]) return false;
+        /** Pieces captured by a shieldwall that the piece on edge square sq closes. */
+        _shieldwallCaptures(sq) {
+            const N = this.N, b = this.board;
+            const r = (sq / N) | 0, c = sq % N;
+            const attacking = b[sq] === ATTACKER;
+            const armed = this.rules.king_armed;
+            const isEnemy = attacking ? (p => p === DEFENDER || p === KING) : (p => p === ATTACKER);
+            const isOwn = attacking ? (p => p === ATTACKER) : (p => p === DEFENDER || (armed && p === KING));
+            const captured = [];
+            // (direction into the board, whether sq is on that edge)
+            const edges = [[1, 0, r === 0], [-1, 0, r === N - 1], [0, 1, c === 0], [0, -1, c === N - 1]];
+            for (const [ir, ic, onEdge] of edges) {
+                if (!onEdge) continue;
+                for (const [ar, ac] of [[ic, ir], [-ic, -ir]]) {
+                    const row = [];
+                    let rr = r + ar, cc = c + ac;
+                    while (this._inside(rr, cc) && isEnemy(b[rr * N + cc])) {
+                        row.push(rr * N + cc);
+                        rr += ar;
+                        cc += ac;
+                    }
+                    const closed = this._inside(rr, cc) && (isOwn(b[rr * N + cc]) || this.isCorner[rr * N + cc] === 1);
+                    const faced = row.every(s => isOwn(b[s + ir * N + ic]));
+                    if (row.length >= 2 && closed && faced) {
+                        for (const s of row) if (b[s] !== KING) captured.push(s);
+                    }
+                }
+            }
+            return captured;
+        }
+
+        // --------------------------------------------------------------------------------------
+        // Encirclement and exit fort (Python: _defenders_encircled, _king_in_exit_fort)
+        // --------------------------------------------------------------------------------------
+
+        /** True if no defender (king included) can reach the edge through squares without attackers. */
+        areDefendersEncircled() {
+            const region = defenderRegion(this);
+            const isEdge = this.geo.isEdge;
+            for (let sq = 0; sq < region.length; sq++) if (region[sq] && isEdge[sq]) return false;
             return true;
         }
 
-        _checkGameOver() {
-            const b = this.board;
-            for (const corner of this.geo.corners) {
-                if (b[corner] === KING) {
-                    this.gameOver = true;
-                    this.winner = DEFENDER_PLAYER;
-                    return;
+        /**
+         * The exit fort test (reference B2): the king stands on the edge, can move, and is walled in
+         * by defending soldiers that can never be captured, whatever the attackers do. See the
+         * Python method for the reasoning; this follows it step by step.
+         */
+        isKingInExitFort() {
+            const N = this.N, NN = N * N, b = this.board;
+            const king = b.indexOf(KING);
+            if (king < 0 || !this.geo.isEdge[king]) return false;
+            // The fort's inside: the king's square and the empty squares he can walk to
+            const inside = new Uint8Array(NN);
+            inside[king] = 1;
+            const stack = [king];
+            let size = 1;
+            while (stack.length) {
+                const sq = stack.pop();
+                for (const n of neighbours(N, sq)) {
+                    if (!inside[n] && b[n] === EMPTY) {
+                        inside[n] = 1;
+                        size++;
+                        stack.push(n);
+                    }
                 }
             }
-            if (this.kingSquare() < 0) {
-                this.gameOver = true;
-                this.winner = ATTACKER_PLAYER;
-                return;
+            if (size < 2) return false;  // the king cannot move
+            const wall = new Uint8Array(NN);
+            for (let sq = 0; sq < NN; sq++) {
+                if (!inside[sq]) continue;
+                for (const n of neighbours(N, sq)) if (!inside[n]) wall[n] = 1;
             }
-            if (this.variant.encirclement && this.isKingEncircled()) {
-                this.gameOver = true;
-                this.winner = ATTACKER_PLAYER;
-                return;
-            }
-            // No legal moves (also when only repeating moves are left): the player to move loses
-            if (this.legalMoves().length === 0) {
-                this.gameOver = true;
-                this.winner = 1 - this.currentPlayer;
-            }
-        }
+            for (let sq = 0; sq < NN; sq++) if (wall[sq] && b[sq] === ATTACKER) return false;
 
-        /** Why the game ended: 'escape', 'capture', 'encirclement', 'no-moves', or null. */
-        endReason() {
-            if (!this.gameOver) return null;
-            const b = this.board;
-            if (this.geo.corners.some(sq => b[sq] === KING)) return 'escape';
-            if (this.kingSquare() < 0) return 'capture';
-            if (this.variant.encirclement && this.isKingEncircled()) return 'encirclement';
-            return 'no-moves';
+            const safe = new Uint8Array(NN);
+            for (let sq = 0; sq < NN; sq++) if (b[sq] === DEFENDER) safe[sq] = 1;
+            const openSquares = () => {
+                const open = new Uint8Array(NN);
+                for (let sq = 0; sq < NN; sq++) open[sq] = !inside[sq] && !safe[sq] ? 1 : 0;
+                return open;
+            };
+            // The four edge lines, each with the direction into the board (for shieldwall runs)
+            const line = (f) => Array.from({ length: N }, (_, i) => f(i));
+            const edgeLines = [
+                [line(i => i), N], [line(i => (N - 1) * N + i), -N],
+                [line(i => i * N), 1], [line(i => i * N + N - 1), -1],
+            ];
+            let changed = true;
+            while (changed) {
+                changed = false;
+                // A soldier with open squares on both sides along one line could be captured
+                let open = openSquares();
+                const soldiers = [];
+                for (let sq = 0; sq < NN; sq++) if (safe[sq]) soldiers.push(sq);
+                for (const sq of soldiers) {
+                    const r = (sq / N) | 0, c = sq % N;
+                    for (const [dr, dc] of [[1, 0], [0, 1]]) {
+                        if (this._inside(r - dr, c - dc) && this._inside(r + dr, c + dc) &&
+                            open[(r - dr) * N + c - dc] && open[(r + dr) * N + c + dc]) {
+                            safe[sq] = 0;
+                            changed = true;
+                        }
+                    }
+                }
+                if (!this.rules.shieldwall) continue;
+                // A run of two or more soldiers along an edge, open in front and at both ends
+                open = openSquares();
+                for (const [squares, inward] of edgeLines) {
+                    let i = 0;
+                    while (i < N) {
+                        if (!safe[squares[i]]) {
+                            i++;
+                            continue;
+                        }
+                        let j = i;
+                        while (j < N && safe[squares[j]]) j++;
+                        const run = squares.slice(i, j);
+                        const endsOpen = i > 0 && j < N && open[squares[i - 1]] && open[squares[j]];
+                        if (run.length >= 2 && endsOpen && run.every(s => open[s + inward])) {
+                            for (const s of run) safe[s] = 0;
+                            changed = true;
+                        }
+                        i = j;
+                    }
+                }
+            }
+            for (let sq = 0; sq < NN; sq++) if (wall[sq] && !safe[sq]) return false;
+            return true;
         }
 
         /** Number of pieces of a kind on the board. */
@@ -628,71 +763,68 @@
         }
     }
 
+    function neighbours(N, sq) {
+        const r = (sq / N) | 0, c = sq % N, out = [];
+        if (r > 0) out.push(sq - N);
+        if (r < N - 1) out.push(sq + N);
+        if (c > 0) out.push(sq - 1);
+        if (c < N - 1) out.push(sq + 1);
+        return out;
+    }
+
     // ------------------------------------------------------------------------------------------
     // Network input planes (features.py)
     // ------------------------------------------------------------------------------------------
 
     /**
-     * Squares connected to the king through squares without an attacker (4-connected, the king's
-     * square included). All zero when there is no king. Python: features.king_region_plane and
-     * Hnefatafl._is_king_encircled.
+     * Squares connected to a defender or the king through squares that hold no attacker (their own
+     * squares included). The defenders are encircled exactly when this region touches no edge
+     * square. Python: features.defender_region_plane and Tafl._defenders_encircled.
      */
-    function kingRegion(game) {
+    function defenderRegion(game) {
         const N = game.N, b = game.board;
         const region = new Uint8Array(N * N);
-        const king = b.indexOf(KING);
-        if (king < 0) return region;
-        const stack = [king];
-        region[king] = 1;
+        const stack = [];
+        for (let sq = 0; sq < b.length; sq++) {
+            if (b[sq] >= DEFENDER) {
+                region[sq] = 1;
+                stack.push(sq);
+            }
+        }
         while (stack.length) {
             const sq = stack.pop();
-            const r = (sq / N) | 0, c = sq % N;
-            if (r > 0 && !region[sq - N] && b[sq - N] !== ATTACKER) { region[sq - N] = 1; stack.push(sq - N); }
-            if (r < N - 1 && !region[sq + N] && b[sq + N] !== ATTACKER) { region[sq + N] = 1; stack.push(sq + N); }
-            if (c > 0 && !region[sq - 1] && b[sq - 1] !== ATTACKER) { region[sq - 1] = 1; stack.push(sq - 1); }
-            if (c < N - 1 && !region[sq + 1] && b[sq + 1] !== ATTACKER) { region[sq + 1] = 1; stack.push(sq + 1); }
+            for (const n of neighbours(N, sq)) {
+                if (!region[n] && b[n] !== ATTACKER) {
+                    region[n] = 1;
+                    stack.push(n);
+                }
+            }
         }
         return region;
     }
 
     /**
      * [reach_attackers, reach_defenders, reach_king]: the squares each side could move to now, for
-     * both sides whatever the turn, ignoring the repetition rule. reach_defenders includes the
-     * king's squares. Python: features.reach_planes (equal to the engines' _get_piece_moves).
+     * both sides whatever the turn. reach_defenders includes the king's squares. Python:
+     * features.reach_planes (equal to the moves of Tafl.get_legal_moves).
      */
     function reachPlanes(game) {
-        const N = game.N, b = game.board, NN = N * N;
-        const { isCorner, throne } = game.geo;
-        const throneOn = game.rules.throneEnabled;
+        const NN = game.N * game.N;
         const attackers = new Uint8Array(NN), defenders = new Uint8Array(NN), king = new Uint8Array(NN);
-        for (let sq = 0; sq < NN; sq++) {
-            const p = b[sq];
-            if (p === EMPTY) continue;
-            const isKing = p === KING;
-            const r = (sq / N) | 0, c = sq % N;
-            for (let d = 0; d < 4; d++) {
-                const dr = DIRS[d][0], dc = DIRS[d][1];
-                let nr = r + dr, nc = c + dc;
-                while (nr >= 0 && nr < N && nc >= 0 && nc < N) {
-                    const t = nr * N + nc;
-                    if (b[t] !== EMPTY) break;
-                    if (isCorner[t] && !isKing) break;
-                    if (!(throneOn && t === throne && !isKing)) {
-                        if (p === ATTACKER) attackers[t] = 1;
-                        else if (p === DEFENDER) defenders[t] = 1;
-                        else { king[t] = 1; defenders[t] = 1; }
-                    }
-                    nr += dr;
-                    nc += dc;
-                }
+        game._slides(3, (p, t) => {
+            if (p === ATTACKER) attackers[t] = 1;
+            else if (p === DEFENDER) defenders[t] = 1;
+            else {
+                king[t] = 1;
+                defenders[t] = 1;
             }
-        }
+        });
         return { attackers, defenders, king };
     }
 
-    const PIECE_CODES = { attackers: ATTACKER, defenders: DEFENDER, king: KING };
+    const PIECE_PLANES = { attackers: ATTACKER, defenders: DEFENDER, king: KING };
     const SIMPLE_PLANES = new Set(['player', 'ones', 'corners', 'throne', 'reach_attackers',
-        'reach_defenders', 'reach_king', 'king_region']);
+        'reach_defenders', 'reach_king', 'defender_region']);
 
     /**
      * Parse the plane names of a model description (input.planes in its .json, from
@@ -716,7 +848,8 @@
     /**
      * The network input of a position: a Float32Array of planes.length * N * N values, 0 or 1, in
      * the order of `planes` (from parsePlanes). History planes need game.prevBoards; before the
-     * start of the game they are zero.
+     * start of the game they are zero. The corner plane is empty without corner squares, the throne
+     * plane without a throne.
      */
     function buildFeatures(game, planes, out) {
         const N = game.N, NN = N * N, b = game.board;
@@ -730,7 +863,7 @@
                 case 'king': {
                     const board = plane.t === 0 ? b : game.prevBoards[game.prevBoards.length - plane.t];
                     if (!board) break;
-                    const code = PIECE_CODES[plane.kind];
+                    const code = PIECE_PLANES[plane.kind];
                     for (let sq = 0; sq < NN; sq++) if (board[sq] === code) out[off + sq] = 1;
                     break;
                 }
@@ -741,10 +874,10 @@
                     out.fill(1, off, off + NN);
                     break;
                 case 'corners':
-                    for (const sq of game.geo.corners) out[off + sq] = 1;
+                    for (const sq of game.corners) out[off + sq] = 1;
                     break;
                 case 'throne':
-                    if (game.rules.throneEnabled) out[off + game.geo.throne] = 1;
+                    if (game.throneSq >= 0) out[off + game.throneSq] = 1;
                     break;
                 case 'reach_attackers':
                 case 'reach_defenders':
@@ -754,8 +887,8 @@
                     for (let sq = 0; sq < NN; sq++) if (src[sq]) out[off + sq] = 1;
                     break;
                 }
-                case 'king_region':
-                    region = region || kingRegion(game);
+                case 'defender_region':
+                    region = region || defenderRegion(game);
                     for (let sq = 0; sq < NN; sq++) if (region[sq]) out[off + sq] = 1;
                     break;
             }
@@ -765,10 +898,10 @@
 
     const Tafl = {
         EMPTY, ATTACKER, DEFENDER, KING, ATTACKER_PLAYER, DEFENDER_PLAYER,
-        VARIANTS, PYTHON_DEFAULT_RULES, TaflGame,
-        normalizeRules, rulesEqual, geometry,
+        VARIANTS, RULESETS, KING_CAPTURE_RULES, REPETITION_RULES, TaflGame,
+        makeRules, normalizeRules, rulesKey, rulesEqual, geometry,
         encodeMove, moveFrom, moveTo, policyIndex, squareName, moveName,
-        parsePlanes, historyNeeded, buildFeatures, reachPlanes, kingRegion,
+        parsePlanes, historyNeeded, buildFeatures, reachPlanes, defenderRegion,
     };
 
     if (typeof module !== 'undefined' && module.exports) module.exports = Tafl;

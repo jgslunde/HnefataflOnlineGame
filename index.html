@@ -50,8 +50,9 @@
                     rules it was trained with; the line above the board warns when the rules differ.
                 </p>
                 <p>
-                    "Minimax" (Brandubh only) searches every line a fixed number of moves deep and judges the
-                    positions with hand-written rules (heuristics). It plays oddly until it finds a forced win.
+                    "Minimax" (7×7 only) searches every line a fixed number of moves deep and judges the
+                    positions with hand-written rules (heuristics). It was written for older Brandubh rules, so a move it
+                    suggests that these rules forbid is replaced by a random one. It plays oddly until it finds a forced win.
                 </p>
                 <p>
                     The evaluation is shown from the attackers' side: +1 means the attackers win, −1 the defenders.
@@ -66,32 +67,19 @@
                 <div class="panel-title">New game</div>
                 <label class="field">Board
                     <select id="ng-variant">
-                        <option value="7">Brandubh, 7×7</option>
-                        <option value="9">Tablut, 9×9</option>
-                        <option value="11">Hnefatafl, 11×11</option>
+                        <option value="7">7×7 (Brandubh)</option>
+                        <option value="9">9×9 (Tablut)</option>
+                        <option value="11">11×11 (Hnefatafl)</option>
                     </select>
                 </label>
+                <label class="field">Rules
+                    <select id="ng-ruleset"></select>
+                </label>
+                <div id="ng-ruleset-note" class="hint"></div>
                 <label class="field">AI model
                     <select id="ng-model"></select>
                 </label>
                 <div id="ng-model-note" class="hint"></div>
-
-                <label class="check">
-                    <input type="checkbox" id="ng-model-rules" checked>
-                    Play by the rules the model was trained with
-                </label>
-                <fieldset id="ng-rules">
-                    <label class="field">King captured
-                        <select id="ng-kcp">
-                            <option value="2">between two attackers, like a soldier</option>
-                            <option value="3">by attackers on three sides</option>
-                            <option value="4">by attackers on four sides (the board edge counts)</option>
-                        </select>
-                    </label>
-                    <label class="check"><input type="checkbox" id="ng-kcc"> The king takes part in captures</label>
-                    <label class="check"><input type="checkbox" id="ng-throne"> Throne: only the king may stop on the centre square</label>
-                    <label class="check"><input type="checkbox" id="ng-throne-hostile"> <span id="ng-throne-hostile-text">The empty throne is hostile</span></label>
-                </fieldset>
                 <div id="ng-warning" class="warning hidden"></div>
                 <div class="panel-buttons">
                     <button id="ng-start" class="action-btn">Start</button>
@@ -152,7 +140,7 @@
                 <div class="config-label">
                     Attacker
                     <span class="tooltip-icon">?
-                        <span class="tooltip-text">Who plays the attackers (black). "NN + MCTS" is a neural network with a tree search and plays most naturally. "Minimax" exists for Brandubh only.</span>
+                        <span class="tooltip-text">Who plays the attackers (black). "NN + MCTS" is a neural network with a tree search and plays most naturally. "Minimax" exists for 7×7 boards only.</span>
                     </span>
                 </div>
                 <select id="attacker-type">
@@ -176,7 +164,7 @@
                 <div class="config-label">
                     Defender
                     <span class="tooltip-icon">?
-                        <span class="tooltip-text">Who plays the defenders (white) and the king. "NN + MCTS" is a neural network with a tree search and plays most naturally. "Minimax" exists for Brandubh only.</span>
+                        <span class="tooltip-text">Who plays the defenders (white) and the king. "NN + MCTS" is a neural network with a tree search and plays most naturally. "Minimax" exists for 7×7 boards only.</span>
                     </span>
                 </div>
                 <select id="defender-type">
@@ -200,7 +188,7 @@
                 <div class="config-label">
                     Eval bar
                     <span class="tooltip-icon">?
-                        <span class="tooltip-text">Position evaluation. "NN" is the network's own judgement, "NN + MCTS" the result of a tree search (most accurate). "Heuristics" uses the Minimax AI's hand-written rules (Brandubh only).</span>
+                        <span class="tooltip-text">Position evaluation. "NN" is the network's own judgement, "NN + MCTS" the result of a tree search (most accurate). "Heuristics" uses the Minimax AI's hand-written rules (7×7 boards only).</span>
                     </span>
                 </div>
                 <select id="eval-mode-select">
@@ -244,7 +232,7 @@
     <script src="mcts.js"></script>
     <script src="network.js"></script>
     <script src="searchClient.js"></script>
-    <!-- Minimax AI (C++ compiled to WebAssembly, Brandubh only) -->
+    <!-- Minimax AI (C++ compiled to WebAssembly, 7×7 boards only) -->
     <script src="Cpp_ai.js"></script>
     <script src="script.js"></script>
 </body>

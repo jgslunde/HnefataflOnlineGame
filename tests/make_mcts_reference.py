@@ -26,9 +26,7 @@ parser.add_argument('training_dir')
 parser.add_argument('--sims', type=int, default=200)
 parser.add_argument('--out', default=os.path.join(HERE, 'reference', 'mcts.json'))
 parser.add_argument('--models', nargs='*', default=[
-    'checkpoints/brandubh_littleboy_decay_fixed_iter_210',
-    'checkpoints/tablut_test_6x48_iter_150',
-    'checkpoints/hnefatafl_baseline_iter_1',
+    'checkpoints/copenhagen_baseline_iter_16',
 ])
 args = parser.parse_args()
 sys.path.insert(0, os.path.abspath(args.training_dir))
@@ -36,8 +34,8 @@ sys.path.insert(0, os.path.abspath(args.training_dir))
 import onnxruntime as ort  # noqa: E402
 import torch  # noqa: E402
 from features import FeatureSpec  # noqa: E402
-from games import game_spec_for_board  # noqa: E402
 from mcts import MCTS  # noqa: E402
+from tafl import Rules, Tafl  # noqa: E402
 
 
 class OnnxNetwork:
@@ -72,15 +70,15 @@ def main():
     for base in args.models:
         info = json.load(open(os.path.join(REPO, base + '.json')))
         n = info['board_size']
-        spec = game_spec_for_board(n)
+        rules = Rules.from_dict(info['rules'])
         search = info.get('search') or {}
         params = dict(c_puct=search.get('c_puct') or 1.5,
                       fpu_reduction=search.get('fpu_reduction') if search.get('fpu_reduction') is not None else -0.25,
                       search_discount=search.get('discount') or 1.0)
         mcts = MCTS(OnnxNetwork(os.path.join(REPO, base + '.onnx')), num_simulations=args.sims,
                     feature_spec=feature_spec(info['input']['planes']), **params)
-        for game_index in range(3):
-            game = spec.game_class(**info['rules'])
+        for game_index in range(6):
+            game = Tafl(rules)
             played = []
             for stop in (0, 7, 20, 40):
                 while game.move_count < stop and not game.game_over:

@@ -99,7 +99,7 @@ async function loadModel(job) {
     const evaluator = new TaflNetwork.NetworkEvaluator(ort, session, info);
     const loadMs = performance.now() - t0;
     // Check the output sizes on the start position and time a few calls
-    const game = new Tafl.TaflGame(evaluator.N, info.rules || {});
+    const game = new Tafl.TaflGame(evaluator.rules);
     await evaluator.run(game);
     const t1 = performance.now();
     for (let i = 0; i < 5; i++) await evaluator.run(game);

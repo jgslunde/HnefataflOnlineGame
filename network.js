@@ -2,9 +2,11 @@
  * A network model (ONNX) and its description (.json), as evaluation function for the search.
  *
  * The description is the .json file that convert_to_onnx.py in the training code writes next to
- * each .onnx file: board size, input planes in order, policy layout, the rules the network was
- * trained with and the search settings of its training run. Everything model-specific comes from
- * there: the input planes are built from input.planes, never from assumptions.
+ * each .onnx file: board size, input planes in order, policy layout, the rule set the network was
+ * trained with (ruleset, and all its fields in rules) and the search settings of its training run.
+ * Everything model-specific comes from there: the input planes are built from input.planes, never
+ * from assumptions. Descriptions without a ruleset key belong to models trained before the named
+ * rule sets; the current engine cannot play their rules, so they are refused.
  *
  * Works with onnxruntime-web in the Web Worker and in Node (tests); the `ort` object is passed in.
  */
@@ -29,9 +31,14 @@
         };
     }
 
-    /** Rules a model was trained with (normalized), or null if its description does not say. */
+    /**
+     * The rule set a model was trained with, from its description. Throws for a description without
+     * a named rule set (a model trained before them).
+     */
     function modelRules(info) {
-        if (!info || !info.rules || info.rules.king_capture_pieces === undefined) return null;
+        if (!info || !info.ruleset || !info.rules) {
+            throw new Error('the model description names no rule set (a model trained before the named rule sets)');
+        }
         return Tafl.normalizeRules(info.rules);
     }
 
@@ -48,6 +55,8 @@
             this.info = info;
             this.N = info.board_size;
             if (!Tafl.VARIANTS[this.N]) throw new Error(`Unsupported board size ${this.N}`);
+            this.rules = modelRules(info);
+            if (this.rules.board_size !== this.N) throw new Error('board_size and the rules\' setup disagree');
             this.planes = Tafl.parsePlanes(info.input.planes);
             if (info.input.shape && info.input.shape[1] !== this.planes.length) {
                 throw new Error(`The description lists ${this.planes.length} planes but input.shape says ${info.input.shape[1]}`);
@@ -101,9 +110,9 @@
         async evaluate(game, moves) {
             let key = null;
             if (this.cacheSize > 0) {
-                // Some planes (throne, reach) depend on the rules: a game with other rules starts afresh
-                const r = game.rules;
-                const rules = `${r.kingCapturePieces}${+r.kingCanCapture}${+r.throneIsHostile}${+r.throneEnabled}`;
+                // Some planes (corners, throne, reach) and the legal moves depend on the rules: a game
+                // with other rules starts afresh
+                const rules = Tafl.rulesKey(game.rules);
                 if (rules !== this.cacheRules) {
                     this.cache.clear();
                     this.cacheRules = rules;

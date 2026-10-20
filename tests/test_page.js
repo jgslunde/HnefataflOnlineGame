@@ -178,37 +178,98 @@ async function main() {
             await touch('touchEnd', []);
         };
 
-        // --- Load: 7x7 with the default model ---
+        const hidden = (id) => evaluate(`document.getElementById('${id}').classList.contains('hidden')`);
+        const count = (selector) => evaluate(`document.querySelectorAll('${selector}').length`);
+        const highlight = (sq) => evaluate(`getComputedStyle(document.querySelector('#board td[data-sq="${sq}"]'), '::before').opacity`);
+
+        // --- Load: Brandubh 2 (7x7), which has no network yet ---
         await evaluate('localStorage.clear()');
         await browser.send('Page.reload', {}, page);
-        await waitFor('typeof app !== "undefined" && app.game && app.modelState === "ready"', 'the default model', 60000);
-        check(await evaluate('app.cells.length') === 49, 'the 7x7 board has 49 squares');
-        check(await evaluate('app.model.id') === 'brandubh_littleboy_decay_fixed_210', 'the default 7x7 model is loaded');
-        check(await evaluate('document.getElementById("model-warning").classList.contains("hidden")'), 'no rules warning with the model\'s own rules');
-        await waitFor('app.analysis.stats && app.analysis.stats.visits >= 200', 'the eval bar analysis');
-        console.log(`     analysis: ${await evaluate('document.getElementById("eval-value").textContent')} (${await evaluate('document.getElementById("eval-detail").textContent')})`);
+        await waitFor('typeof app !== "undefined" && app.game && app.models.length > 0', 'the page and the model list', 60000);
+        check(await evaluate('app.rules.name') === 'brandubh' && await evaluate('app.cells.length') === 49, 'the page opens with Brandubh 2 on a 7x7 board');
+        check(await count('#board td.corner') === 4 && await count('#board td.throne') === 1, 'its corners and throne are marked');
+        check(await evaluate('app.model') === null && await evaluate('document.querySelector(\'#defender-type option[value="mcts"]\').disabled'),
+            'without a 7x7 network the NN + MCTS player is not offered');
+        check((await evaluate('document.getElementById("eval-detail").textContent')).includes('no network'), 'the eval bar says there is no network');
+        await click('#help-btn');
+        check((await evaluate('document.getElementById("rules-text").textContent')).includes('on the throne only when attackers surround him on all four sides'),
+            'the help lists the rules of Brandubh 2');
+        await screenshot('help.png');
+        await click('[data-close="helpText"]');
 
-        // --- A human move by clicks: attacker d7 (square 3) to c7 (square 2) ---
+        // --- Clicks: attacker d7 (square 3) to c7 (square 2) ---
         await click('#board td[data-sq="3"]');
         check(await evaluate('app.selected') === 3, 'clicking an attacker selects it');
-        check(await evaluate('document.querySelectorAll("#board td.legal-move").length') > 0, 'its legal moves are marked');
+        check(await count('#board td.legal-move') > 0, 'its legal moves are marked');
         await click('#board td[data-sq="2"]');
         await idle();
         check(await evaluate('app.game.moveCount') === 1, 'clicking a target square makes the move');
-        const highlight = (sq) => evaluate(`getComputedStyle(document.querySelector('#board td[data-sq="${sq}"]'), '::before').opacity`);
-        check(await evaluate('document.querySelectorAll("#board td.last-move").length') === 2 &&
-            Number(await highlight(2)) > 0.5 && Number(await highlight(3)) > 0.5, 'the move\'s two squares light up');
+        check(await count('#board td.last-move') === 2 && Number(await highlight(2)) > 0.5 && Number(await highlight(3)) > 0.5,
+            'the move\'s two squares light up');
         await screenshot('last_move.png');
         await sleep(1200);
         check(Number(await highlight(2)) === 0 && Number(await highlight(3)) === 0, 'the highlight is gone after a second');
 
-        // --- The defender as NN + MCTS AI ---
+        // --- Drag and drop and clicks with real mouse events (defender c5, square 17) ---
+        await mouseDrag(17, 10);
+        check(await evaluate('app.game.moveCount') === 1 && await evaluate('app.selected') === 17 &&
+            await count('.dragged-piece, #board td.drag-source') === 0, 'a piece dropped on an occupied square goes back and stays selected');
+        await mouseDrag(17, 15, async () => {
+            check(await count('.dragged-piece') === 1 &&
+                await evaluate('document.querySelector("#board td.drag-over") === document.querySelector(\'#board td[data-sq="15"]\')'),
+                'while dragging, the piece follows the pointer and the target square is marked');
+            await screenshot('dragging.png');
+        });
+        await idle();
+        check(await evaluate('app.game.moveCount') === 2 && await evaluate('app.lastMove') === ((17 << 8) | 15), 'dragging a piece with the mouse moves it');
+        await mouseClick(21);
+        await waitFor('app.selected === 21', 'the click to select the piece', 3000);
+        check(true, 'a real mouse click selects a piece');
+        await mouseClick(14);
+        await idle();
+        check(await evaluate('app.game.moveCount') === 3 && await evaluate('app.lastMove') === ((21 << 8) | 14), 'a second click moves it');
+
+        // --- Minimax (7x7 only) as the defender; undo ---
+        await setSelect('eval-mode-select', 'heuristic');
+        await setRange('defender-minimax-difficulty', 2);
+        await setSelect('defender-type', 'minimax');
+        await waitFor('app.game.moveCount === 4 && !app.animating', 'Minimax to move', 60000);
+        check(true, 'Minimax plays as defender (its moves are checked against these rules)');
+        await setSelect('defender-type', 'human');
+        await setSelect('eval-mode-select', 'nn-mcts');
+        await click('#undo-btn');
+        await idle();
+        check(await evaluate('app.game.moveCount') === 3, 'undo takes back a move');
+        await screenshot('brandubh.png');
+
+        // --- Sami Tablut (9x9): defenders first, the king escapes to the edge ---
+        await click('#new-game-btn');
+        await setSelect('ng-variant', '9');
+        check(await evaluate('[...document.getElementById("ng-ruleset").options].map(o => o.value).join()') === 'sami_tablut,sea_battle_9x9,market_hnefatafl',
+            'the panel offers the three 9x9 rule sets');
+        await click('#ng-start');
+        await waitFor('app.rules.name === "sami_tablut"', 'the Sami Tablut game');
+        check(await evaluate('app.game.currentPlayer') === 1 && await evaluate('app.cells.length') === 81, 'in Sami Tablut the defenders move first');
+        check(await count('#board td.corner') === 0 && await count('#board td.throne') === 1, 'an edge-escape game has no corner squares');
+        await screenshot('sami_tablut.png');
+
+        // --- Copenhagen (11x11) with its network ---
+        await click('#new-game-btn');
+        await setSelect('ng-variant', '11');
+        check(await evaluate('document.getElementById("ng-ruleset").value') === 'copenhagen' &&
+            await evaluate('document.getElementById("ng-model").value') === 'copenhagen_baseline_16', 'an 11x11 game defaults to Copenhagen and its model');
+        await click('#ng-start');
+        await waitFor('app.rules.name === "copenhagen" && app.modelState === "ready"', 'the Copenhagen model', 60000);
+        check(await hidden('model-warning'), 'no rules warning when the model plays its own rules');
+        check(await count('#board td.corner') === 4 && await count('#board td.throne') === 1, 'Copenhagen has corners and a throne');
+        await waitFor('app.analysis.stats && app.analysis.stats.visits >= 200', 'the eval bar analysis', 60000);
+        console.log(`     analysis: ${await evaluate('document.getElementById("eval-value").textContent')} (${await evaluate('document.getElementById("eval-detail").textContent')})`);
         await setRange('defender-mcts-difficulty', 100);
         await setSelect('defender-type', 'mcts');
-        await waitFor('app.game.moveCount === 2 && !app.animating', 'the AI defender to move');
+        await click('#board td[data-sq="3"]');
+        await click('#board td[data-sq="14"]');
+        await waitFor('app.game.moveCount === 2 && !app.animating', 'the AI defender to answer', 60000);
         check(true, 'the NN + MCTS defender answers');
-
-        // --- Suggestions and the raw network ---
         await setSelect('policy-mode-select', 'nn-mcts');
         await waitFor('document.querySelectorAll(".policy-overlay").length > 0', 'MCTS suggestions');
         check(true, 'MCTS move suggestions are shown');
@@ -216,101 +277,39 @@ async function main() {
         await setSelect('policy-mode-select', 'nn');
         await waitFor('app.analysis.nn && document.querySelectorAll(".policy-overlay").length > 0', 'network suggestions');
         check(true, 'network evaluation and policy suggestions are shown');
-        await screenshot('brandubh.png');
-
-        // --- Undo goes back to the human's turn (two plies) ---
+        await screenshot('copenhagen.png');
         await click('#undo-btn');
         await idle();
-        check(await evaluate('app.game.moveCount') === 0 && await evaluate('app.game.currentPlayer') === 0, 'undo returns to the human attacker\'s turn');
-
-        // --- Minimax on 7x7 ---
-        await setSelect('eval-mode-select', 'heuristic');
-        await setRange('attacker-minimax-difficulty', 2);
-        await setSelect('attacker-type', 'minimax');
-        await waitFor('app.game.moveCount >= 2', 'Minimax and the AI defender to move', 60000);
-        check(true, 'Minimax plays as attacker');
-        await setSelect('attacker-type', 'human');
-        await setSelect('defender-type', 'human');
+        check(await evaluate('app.game.moveCount') === 0, 'undo returns to the human attacker\'s turn');
         await setSelect('eval-mode-select', 'nn-mcts');
         await setSelect('policy-mode-select', 'off');
+        await setRange('attacker-mcts-difficulty', 60);
+        await setRange('defender-mcts-difficulty', 60);
+        await setSelect('attacker-type', 'mcts');
+        await setSelect('defender-type', 'mcts');
+        await waitFor('app.game.moveCount >= 6 || app.game.gameOver', '6 AI moves', 120000);
+        check(true, `AI against AI plays (${(await evaluate('app.msPerCall')).toFixed(2)} ms per network call)`);
+        await setSelect('attacker-type', 'human');
+        await setSelect('defender-type', 'human');
         await idle();
-
-        // --- Tablut and Hnefatafl: new games through the panel, AI against AI ---
-        for (const [size, variant, minMoves] of [[9, 'tablut', 6], [11, 'hnefatafl', 6]]) {
-            await click('#new-game-btn');
-            await setSelect('ng-variant', String(size));
-            check(await evaluate('document.getElementById("ng-model").options.length') >= 1, `the new-game panel lists a ${size}x${size} model`);
-            await click('#ng-start');
-            await waitFor(`app.size === ${size} && app.modelState === "ready"`, `the ${size}x${size} model`, 60000);
-            check(await evaluate('app.cells.length') === size * size, `the ${variant} board has ${size * size} squares`);
-            const msPerCall = await evaluate('app.msPerCall');
-            await setRange('attacker-mcts-difficulty', 60);
-            await setRange('defender-mcts-difficulty', 60);
-            await setSelect('attacker-type', 'mcts');
-            await setSelect('defender-type', 'mcts');
-            await waitFor(`app.game.moveCount >= ${minMoves} || app.game.gameOver`, `${minMoves} AI moves on ${variant}`, 120000);
-            check(true, `AI against AI plays on ${variant} (${msPerCall.toFixed(2)} ms per network call)`);
-            await setSelect('attacker-type', 'human');
-            await setSelect('defender-type', 'human');
-            await idle();
-            await waitFor('app.analysis.stats && app.analysis.stats.visits >= 200', `the ${variant} analysis`, 60000);
-            console.log(`     ${variant} analysis: ${await evaluate('document.getElementById("eval-detail").textContent')}`);
-            await screenshot(`${variant}.png`);
-        }
-
-        // --- Other rules than the model's: the warning appears; throne marked ---
-        await click('#new-game-btn');
-        await setSelect('ng-variant', '7');
-        await evaluate('document.getElementById("ng-model-rules").click()');
-        await setSelect('ng-kcp', '4');
-        await evaluate('(() => { const t = document.getElementById("ng-throne"); if (!t.checked) t.click(); })()');
-        check(!(await evaluate('document.getElementById("ng-warning").classList.contains("hidden")')), 'the panel warns about rules the model was not trained with');
-        await screenshot('new_game_panel.png');
-        await click('#ng-start');
-        await waitFor('app.size === 7 && app.modelState === "ready"', 'the 7x7 model again', 60000);
-        check(await evaluate('app.rules.kingCapturePieces') === 4 && await evaluate('app.rules.throneEnabled'), 'the new game uses the chosen rules');
-        check(!(await evaluate('document.getElementById("model-warning").classList.contains("hidden")')), 'the line above the board warns about the rules');
-        check(await evaluate('document.querySelectorAll("#board td.throne").length') === 1, 'the throne square is marked');
-        await screenshot('brandubh_custom_rules.png');
-        await click('#help-btn');
-        check((await evaluate('document.getElementById("rules-text").textContent')).includes('four sides'), 'the help lists the game\'s own rules');
-        await screenshot('help.png');
-        await click('[data-close="helpText"]');
-
-        // --- Drag and drop, and clicks, with real mouse events ---
-        await mouseDrag(3, 10);
-        check(await evaluate('app.game.moveCount') === 0 && await evaluate('app.selected') === 3 &&
-            await evaluate('document.querySelectorAll(".dragged-piece, #board td.drag-source").length') === 0,
-            'a piece dropped on an occupied square goes back and stays selected');
-        await mouseDrag(3, 2, async () => {
-            check(await evaluate('document.querySelectorAll(".dragged-piece").length') === 1 &&
-                await evaluate('document.querySelector("#board td.drag-over") === document.querySelector(\'#board td[data-sq="2"]\')'),
-                'while dragging, the piece follows the pointer and the target square is marked');
-            await screenshot('dragging.png');
-        });
-        await idle();
-        check(await evaluate('app.game.moveCount') === 1 && await evaluate('app.lastMove') === ((3 << 8) | 2), 'dragging a piece with the mouse moves it');
-        await mouseClick(17);
-        await waitFor('app.selected === 17', 'the click to select the piece', 3000);
-        check(true, 'a real mouse click selects a piece');
-        await mouseClick(15);
-        await idle();
-        check(await evaluate('app.game.moveCount') === 2 && await evaluate('app.lastMove') === ((17 << 8) | 15), 'a second click moves it');
-
-        // --- Settings: another model mid-game ---
         await click('#settings-btn');
-        await setSelect('model-select', 'brandubh_SE_32x6_204');
-        await waitFor('app.model.id === "brandubh_SE_32x6_204" && app.modelState === "ready"', 'the old default model', 60000);
-        check(await evaluate('app.searchParams.discount') === 0.98, 'its search settings come from its description');
-        await click('[data-close="settingsText"]');
-
-        // --- Continuous analysis keeps going ---
-        await click('#settings-btn');
+        check(await evaluate('app.searchParams.discount') === 0.995, 'the search settings come from the model description');
         await evaluate('document.getElementById("continuous-eval-toggle").click()');
         await click('[data-close="settingsText"]');
-        await waitFor('app.analysis.stats && app.analysis.stats.visits > 1000', 'continuous analysis past 1000 visits', 60000);
+        await waitFor('app.analysis.stats && app.analysis.stats.visits > 1000', 'continuous analysis past 1000 visits', 90000);
         check(true, `continuous analysis runs (${await evaluate('document.getElementById("eval-detail").textContent')})`);
         await evaluate('document.getElementById("continuous-eval-toggle").click()');
+
+        // --- Fetlar with the Copenhagen model: the rules differ, so both places warn ---
+        await click('#new-game-btn');
+        await setSelect('ng-ruleset', 'fetlar');
+        const warning = await evaluate('document.getElementById("ng-warning").textContent');
+        check(!(await hidden('ng-warning')) && warning.includes('shieldwall') && warning.includes('exit fort'),
+            'the panel warns that the model was trained with other rules');
+        await screenshot('new_game_panel.png');
+        await click('#ng-start');
+        await waitFor('app.rules.name === "fetlar" && app.modelState === "ready"', 'the Fetlar game', 60000);
+        check(!(await hidden('model-warning')), 'the line above the board warns about the rules');
 
         // --- Phone layout: everything fits on the screen, the menus are in the Settings panel ---
         const phone = async (width, height) => {
@@ -327,12 +326,12 @@ async function main() {
         await click('[data-close="settingsText"]');
         await browser.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 }, page);
         const scrollBefore = await evaluate('window.scrollY');
-        await touchDrag(21, 14);
+        await touchDrag(3, 14);
         await idle();
-        check(await evaluate('app.game.moveCount') === 3 && await evaluate('app.lastMove') === ((21 << 8) | 14) &&
+        check(await evaluate('app.game.moveCount') === 1 && await evaluate('app.lastMove') === ((3 << 8) | 14) &&
             await evaluate('window.scrollY') === scrollBefore, 'a finger drags a piece without scrolling the page');
-        await touchTap(31);
-        await waitFor('app.selected === 31', 'the tap to select the piece', 3000);
+        await touchTap(38);
+        await waitFor('app.selected === 38', 'the tap to select the piece', 3000);
         check(true, 'a tap selects a piece');
         // The rules warning is showing: the longest top line there is
         for (const [width, height] of [[390, 844], [375, 667], [360, 640]]) {
@@ -340,12 +339,6 @@ async function main() {
             check(await fits(), `everything fits on a ${width}x${height} screen without scrolling`);
         }
         await screenshot('phone_small.png');
-        await click('#new-game-btn');
-        await setSelect('ng-variant', '11');
-        await click('#ng-start');
-        await waitFor('app.size === 11 && app.modelState === "ready"', 'the 11x11 model', 60000);
-        check(await fits(), 'an 11x11 game fits on a 360x640 screen too');
-        await screenshot('phone_small_hnefatafl.png');
     } finally {
         browser.close();
         server.close();

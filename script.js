@@ -8,7 +8,7 @@
  */
 'use strict';
 
-const { TaflGame, VARIANTS, ATTACKER, DEFENDER, KING, ATTACKER_PLAYER, encodeMove, moveFrom, moveTo } = Tafl;
+const { TaflGame, RULESETS, ATTACKER, DEFENDER, KING, ATTACKER_PLAYER, encodeMove, moveFrom, moveTo } = Tafl;
 const { chooseMove } = TaflMCTS;
 const { modelSearchSettings, modelRules } = TaflNetwork;
 
@@ -16,20 +16,30 @@ const SIDES = ['attacker', 'defender'];
 const SIDE_NAMES = ['Attacker', 'Defender'];
 const PIECE_GLYPHS = { [ATTACKER]: '⚫', [DEFENDER]: '⚪', [KING]: '⬜' };
 const PIECE_CLASSES = { [ATTACKER]: 'attacker', [DEFENDER]: 'defender', [KING]: 'king' };
-const SIZES = [7, 9, 11];
 // Previous positions a game keeps, for networks with history input planes
 const KEEP_BOARDS = 32;
-// Rules of a board size when no model says otherwise: those of the current training runs
-const FALLBACK_RULES = {
-    7: { kingCapturePieces: 2, kingCanCapture: true, throneIsHostile: false, throneEnabled: false },
-    9: { kingCapturePieces: 2, kingCanCapture: true, throneIsHostile: false, throneEnabled: false },
-    11: { kingCapturePieces: 4, kingCanCapture: true, throneIsHostile: true, throneEnabled: true },
+// The rule set a new game of each board size starts with: the most played rules of that size
+const DEFAULT_RULESETS = { 7: 'brandubh', 9: 'sami_tablut', 11: 'copenhagen' };
+// Display names of the rule sets, and the defenders' share of wins in human games on
+// aagenielsen.dk (a draw counts half; RULESETS.md in the training code)
+const RULESET_INFO = {
+    brandubh: { title: 'Brandubh 2', defenders: '62 % of 2,318' },
+    walker_brandub: { title: "Walker's Brandub", defenders: '55 % of 468' },
+    brandubh_2_5w: { title: 'Brandubh 2.5W', defenders: '59 % of 354' },
+    sami_tablut: { title: 'Sami Tablut', defenders: '49 % of 966' },
+    sea_battle_9x9: { title: 'Sea Battle', defenders: '51 % of 352' },
+    market_hnefatafl: { title: 'Market Hnefatafl', defenders: '46 % of 222' },
+    copenhagen: { title: 'Copenhagen Hnefatafl', defenders: '58 % of 13,640 (52 % among top players)' },
+    historical_lewis: { title: 'Historical Hnefatafl, Lewis cross', defenders: '52 % of 664' },
+    historical_bell: { title: 'Historical Hnefatafl, Bell', defenders: '51 % of 314' },
+    simple_tafl: { title: 'Simple Tafl', defenders: '50 % of 142' },
+    fetlar: { title: 'Fetlar Hnefatafl', defenders: '59 % of 1,564' },
 };
 // Endless analysis stops here: the search tree grows with every simulation
 const MAX_ANALYSIS_SIMS = { 7: 100000, 9: 50000, 11: 25000 };
 const SLIDE_MS = 400;
 const FADE_MS = 300;
-const PREFS_KEY = 'tafl-prefs-v1';
+const PREFS_KEY = 'tafl-prefs-v2';
 
 const $ = (id) => document.getElementById(id);
 const boardTable = $('board-table');
@@ -37,14 +47,14 @@ const boardEl = $('board');
 
 const app = {
     size: 7,
-    rules: Tafl.normalizeRules(FALLBACK_RULES[7]),
+    rules: RULESETS.brandubh,
     game: null,
     history: [],          // [{game, lastMove}] before each move, for undo
     lastMove: null,
     selected: -1,         // selected square, or -1
     cells: [],            // per square {td, piece}
-    models: [],           // manifest entries with their descriptions (entry.desc) and board size
-    defaults: {},         // default model id per board size
+    models: [],           // manifest entries with their description (desc), board size and rules
+    defaults: {},         // default model id per rule set name
     modelBySize: {},      // the model last chosen for each board size
     model: null,          // the model of the current game (manifest entry) or null
     modelState: 'none',   // none, loading, ready, error
@@ -74,7 +84,8 @@ try {
     console.error('[Page] Cannot start the search worker:', error);
 }
 
-// The Minimax AI is C++ compiled to WebAssembly (Cpp_ai.js); it knows only 7x7 Brandubh
+// The Minimax AI is C++ compiled to WebAssembly (Cpp_ai.js); it knows only 7x7 boards, and only the
+// old Brandubh rules, so its moves are checked against the engine
 let cppReady = false;
 if (typeof Module !== 'undefined') {
     const previous = Module.onRuntimeInitialized;
@@ -88,66 +99,101 @@ if (typeof Module !== 'undefined') {
 // Rules in words
 // ----------------------------------------------------------------------------------------------
 
-function throneHostilityText(size, rules) {
-    if (!rules.throneEnabled) return null;
-    if (rules.throneIsHostile) return 'the empty throne is hostile to every piece';
-    return VARIANTS[size].throneHostileToAttackers
-        ? 'the empty throne is hostile to attackers only'
-        : 'the empty throne is hostile to no piece';
-}
+const rulesetTitle = (rules) => (RULESET_INFO[rules.name] || { title: rules.name }).title;
 
-function rulesSummary(size, rules) {
-    const parts = [
-        rules.kingCapturePieces === 2 ? 'king captured by two'
-            : rules.kingCapturePieces === 3 ? 'king captured on 3 sides' : 'king captured on 4 sides',
-    ];
-    if (!rules.kingCanCapture) parts.push('unarmed king');
-    if (!rules.throneEnabled) parts.push('no throne');
-    else parts.push(rules.throneIsHostile ? 'hostile throne'
-        : VARIANTS[size].throneHostileToAttackers ? 'throne (hostile to attackers)' : 'throne (not hostile)');
-    if (VARIANTS[size].encirclement) parts.push('encirclement');
+const KING_CAPTURE_SHORT = {
+    weak: 'weak king',
+    weak_throne: 'weak king, strong on the throne',
+    weak_near_throne: 'weak king, strong at the throne',
+    strong: 'strong king',
+};
+
+const ordinal = (n) => `${n}${{ 1: 'st', 2: 'nd', 3: 'rd' }[n] || 'th'}`;
+
+/** The rules in a few words, for the line above the board. */
+function rulesSummary(rules) {
+    const parts = [];
+    if (rules.first_player === 'defenders') parts.push('defenders start');
+    parts.push(rules.king_goal === 'corner' ? 'corner escape' : 'edge escape');
+    parts.push(KING_CAPTURE_SHORT[rules.king_capture]);
+    if (!rules.king_armed) parts.push('unarmed king');
+    if (!rules.throne) parts.push('no throne');
+    else {
+        parts.push(rules.throne_hostile ? 'hostile throne' : 'throne');
+        if (!rules.throne_passable) parts.push('only the king crosses the throne');
+    }
+    for (const [field, text] of [['encirclement', 'encirclement'], ['shieldwall', 'shieldwall'], ['exit_fort', 'exit fort']]) {
+        if (rules[field]) parts.push(text);
+    }
+    if (rules.repetition === 'draw') parts.push(`${ordinal(rules.repetition_count)} repetition draws`);
+    else if (rules.repetition_count !== 3) parts.push(`${ordinal(rules.repetition_count)} repetition loses for the defenders`);
     return parts.join(' · ');
 }
 
 /** What differs between the game's rules and a model's training rules, in the model's terms. */
-function rulesDifferences(size, rules, trained) {
+function rulesDifferences(rules, trained) {
+    if (Tafl.rulesEqual(rules, trained)) return [];
     const out = [];
-    if (rules.kingCapturePieces !== trained.kingCapturePieces) {
-        out.push(trained.kingCapturePieces === 2 ? 'king captured by two'
-            : `king captured on ${trained.kingCapturePieces} sides`);
+    if (rules.setup.join('') !== trained.setup.join('')) out.push('another starting position');
+    if (rules.first_player !== trained.first_player) out.push(`${trained.first_player} start`);
+    if (rules.king_goal !== trained.king_goal) out.push(`${trained.king_goal} escape`);
+    if (rules.king_capture !== trained.king_capture) out.push(KING_CAPTURE_SHORT[trained.king_capture]);
+    if (rules.king_armed !== trained.king_armed) out.push(trained.king_armed ? 'armed king' : 'unarmed king');
+    if (rules.throne !== trained.throne) out.push(trained.throne ? 'a throne' : 'no throne');
+    else if (trained.throne && rules.throne_hostile !== trained.throne_hostile) out.push(trained.throne_hostile ? 'hostile throne' : 'throne not hostile');
+    if (trained.throne && rules.throne_passable !== trained.throne_passable) {
+        out.push(trained.throne_passable ? 'every piece crosses the throne' : 'only the king crosses the throne');
     }
-    if (rules.kingCanCapture !== trained.kingCanCapture) out.push(trained.kingCanCapture ? 'armed king' : 'unarmed king');
-    if (rules.throneEnabled !== trained.throneEnabled) out.push(trained.throneEnabled ? 'throne on' : 'no throne');
-    if (trained.throneEnabled && rules.throneIsHostile !== trained.throneIsHostile) {
-        out.push(trained.throneIsHostile ? 'throne hostile to all' : throneHostilityText(size, trained).replace('the empty ', ''));
+    for (const [field, text] of [['encirclement', 'encirclement'], ['shieldwall', 'shieldwall'], ['exit_fort', 'exit fort']]) {
+        if (rules[field] !== trained[field]) out.push(trained[field] ? text : `no ${text}`);
+    }
+    if (rules.repetition !== trained.repetition || rules.repetition_count !== trained.repetition_count) {
+        out.push(`${ordinal(trained.repetition_count)} repetition ${trained.repetition === 'draw' ? 'draws' : 'loses for the defenders'}`);
     }
     return out;
 }
 
-function rulesList(size, rules) {
+/** The rules in full sentences, for the help panel. */
+function rulesList(rules) {
+    const corners = rules.king_goal === 'corner';
     const items = [
         'All pieces, the king included, move like rooks in chess: any number of empty squares in a straight line.',
-        rules.throneEnabled
-            ? 'Only the king may stop on a corner or on the throne (the centre square). Other pieces may pass over the empty throne.'
-            : 'Only the king may stop on a corner. There is no throne: the centre square is an ordinary square.',
-        'A piece is captured when the opponent moves so that it is trapped between two enemies in a line ' +
-        '(not diagonally). Only the moving piece captures, so a piece may safely move in between two enemies.',
-        'Corners count as enemies of every piece in a capture' +
-        (rules.throneEnabled ? `; ${throneHostilityText(size, rules)}. An occupied throne is never hostile.` : '.'),
-        rules.kingCanCapture
-            ? 'The king takes part in captures, both as the moving piece and as the second piece.'
-            : 'The king takes no part in captures, not even as the second piece.',
-        rules.kingCapturePieces === 2
-            ? 'The king is captured like any other piece: between two attackers, or an attacker and a hostile square.'
-            : rules.kingCapturePieces === 3
-                ? 'The king is captured when attackers or hostile squares are on three of its sides.'
-                : 'The king is captured when attackers or hostile squares are on all four sides. The board edge counts as a side, so three attackers capture a king on the edge.',
+        `The ${rules.first_player} move first.`,
     ];
-    if (VARIANTS[size].encirclement) {
-        items.push('Attackers also win by encirclement: when no path of squares free of attackers leads from the king to the board edge.');
+    if (rules.throne) {
+        items.push(`Only the king may stop on ${corners ? 'a corner or ' : ''}the throne (the centre square). ` +
+            (rules.throne_passable ? 'Other pieces may pass over the empty throne.' : 'Only the king may pass over the empty throne.'));
+    } else {
+        items.push(corners ? 'Only the king may stop on a corner. There is no throne: the centre is an ordinary square.'
+            : 'There are no special squares: the centre is an ordinary square once the king has left it.');
     }
-    items.push('Defenders win when the king reaches a corner. Attackers win when they capture the king.');
-    items.push('A move that would create the same position (with the same player to move) for the third time is not allowed. A player without legal moves loses.');
+    items.push('A piece is captured when the opponent moves so that it is trapped between two enemies in a line ' +
+        '(not diagonally). Only the moving piece captures, so a piece may safely move in between two enemies.');
+    const hostile = [];
+    if (corners) hostile.push('The corners count as enemies of every piece.');
+    if (rules.throne && rules.throne_hostile) hostile.push('The throne counts as an enemy of attackers always, and of defenders when it is empty.');
+    if (hostile.length) items.push(hostile.join(' '));
+    items.push(rules.king_armed ? 'The king takes part in captures, both as the moving piece and as the second piece.'
+        : 'The king is unarmed: he takes no part in captures.');
+    const pair = corners ? 'between two attackers, or an attacker and a corner' : 'between two attackers';
+    items.push({
+        weak: `The king is captured like any other piece: ${pair}.`,
+        weak_throne: `The king is captured like any other piece (${pair}), but on the throne only when attackers surround him on all four sides.`,
+        weak_near_throne: `The king is captured like any other piece (${pair}), but on the throne only from all four sides, and next to the throne from the three other sides.`,
+        strong: `The king is captured only when attackers surround him on all four sides${rules.throne ? ', or on the three other sides when he stands next to the throne' : ''}. He cannot be captured on the board edge.`,
+    }[rules.king_capture]);
+    if (rules.shieldwall) {
+        items.push('Shieldwall: a row of two or more pieces along the board edge is captured at once when the opponent ' +
+            'closes both ends (a corner can be one end) and has a piece in front of every piece of the row. A king in the row survives.');
+    }
+    items.push(corners ? 'The defenders win when the king reaches a corner.' : 'The defenders win when the king reaches any square on the board edge.');
+    if (rules.exit_fort) {
+        items.push('They also win with an exit fort: the king on the edge, able to move, walled in by defenders that the attackers can never capture.');
+    }
+    items.push('The attackers win when they capture the king.' +
+        (rules.encirclement ? ' They also win by encirclement: when no defender can reach the board edge any more.' : ''));
+    items.push(`When a position (with the same player to move) occurs for the ${ordinal(rules.repetition_count)} time, the game ends ` +
+        `${rules.repetition === 'draw' ? 'in a draw' : 'with a win for the attackers'}, whoever made the move. A player who cannot move loses.`);
     return items;
 }
 
@@ -165,8 +211,8 @@ async function loadManifest() {
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             const desc = await r.json();
             Tafl.parsePlanes(desc.input.planes);  // throws on input planes this page cannot build
-            if (!VARIANTS[desc.board_size]) throw new Error(`unsupported board size ${desc.board_size}`);
-            return { ...entry, desc, size: desc.board_size };
+            const rules = modelRules(desc);       // throws for a model without a named rule set
+            return { ...entry, desc, size: rules.board_size, rules };
         } catch (error) {
             console.warn(`[Models] Skipping ${entry.id} (${entry.info}): ${error.message}`);
             return null;
@@ -179,27 +225,29 @@ async function loadManifest() {
 const modelsForSize = (size) => app.models.filter(m => m.size === size);
 const findModel = (id) => app.models.find(m => m.id === id) || null;
 
-function defaultModelFor(size) {
+/**
+ * The model a new game under `rules` starts with: the default model of the rule set, else one
+ * trained with these rules, else the model last chosen for this board size, else any of the size.
+ */
+function defaultModelFor(rules) {
+    const size = rules.board_size;
+    const preset = findModel(app.defaults[rules.name]);
+    if (preset && preset.size === size) return preset;
+    const trained = app.models.find(m => Tafl.rulesEqual(m.rules, rules));
+    if (trained) return trained;
     const chosen = findModel(app.modelBySize[size]);
     if (chosen && chosen.size === size) return chosen;
-    const preset = findModel(app.defaults[size]);
-    if (preset && preset.size === size) return preset;
     return modelsForSize(size)[0] || null;
 }
 
-function trainedRulesText(model) {
-    const rules = model && modelRules(model.desc);
-    return rules ? rulesSummary(model.size, rules) : 'unknown rules';
-}
-
 function modelNote(model) {
-    if (!model) return 'No network model exists for this board yet; the "NN + MCTS" AI is not available.';
+    if (!model) return 'No network model exists for this board size yet; the "NN + MCTS" AI is not available.';
     const d = model.desc;
     const s = modelSearchSettings(d);
     const parts = [
         d.network_description || '',
         d.iteration !== undefined && d.iteration !== null ? `training iteration ${d.iteration}` : '',
-        `trained with: ${trainedRulesText(model)}`,
+        `trained with ${rulesetTitle(model.rules)}`,
         `search: c_puct ${s.cPuct}, FPU ${s.fpuReduction}, discount ${s.discount}`,
     ];
     let text = parts.filter(Boolean).join('; ') + '.';
@@ -253,18 +301,18 @@ const isAITurn = () => !app.game.gameOver && app.players[currentSide()].type !==
 const aiSearchesNow = () => isAITurn() && app.players[currentSide()].type === 'mcts' && app.modelState === 'ready';
 const toAttackerView = (value) => (app.game.currentPlayer === ATTACKER_PLAYER ? value : -value);
 
-function newGame(size, rules, model) {
+function newGame(rules, model) {
     app.epoch++;
     app.animating = false;
     removeFloatingPieces();
-    app.size = size;
     app.rules = Tafl.normalizeRules(rules);
-    app.game = new TaflGame(size, app.rules);
+    app.size = app.rules.board_size;
+    app.game = new TaflGame(app.rules);
     app.game.keepBoards = KEEP_BOARDS;
     app.history = [];
     app.lastMove = null;
     app.selected = -1;
-    document.title = VARIANTS[size].name;
+    document.title = rulesetTitle(app.rules);
     buildBoard();
     updatePlayerOptions();
     updateHelp();
@@ -321,8 +369,11 @@ async function runAI(token) {
         if (token !== app.token) return;
         move = runMinimax(app.game, config.depth).move;
         if (!app.game.isLegalMove(move)) {
-            console.warn(`[AI] Minimax chose ${Tafl.moveName(app.size, move)}, which is not legal under these rules`);
-            move = null;
+            // It knows only the old Brandubh rules; this one is forbidden here (the throne, say)
+            console.warn(`[AI] Minimax chose ${Tafl.moveName(app.size, move)}, which these rules forbid`);
+            const legal = app.game.legalMoves();
+            move = legal[Math.floor(Math.random() * legal.length)];
+            showStatus('Minimax chose a move these rules forbid; it played a random move instead.', false, 5000);
         }
     } else if (config.type === 'mcts' && app.modelState === 'loading') {
         // The model's arrival calls onPositionChanged, which starts the AI again
@@ -416,7 +467,7 @@ function undo() {
 
 function buildBoard() {
     const N = app.size;
-    const { isCorner, throne } = Tafl.geometry(N);
+    const { isCorner, throneSq } = app.game;  // corners only where the king escapes to one
     boardTable.style.setProperty('--n', N);
     boardEl.innerHTML = '';
     app.cells = [];
@@ -428,7 +479,7 @@ function buildBoard() {
             td.dataset.sq = sq;
             td.classList.add((r + c) % 2 === 0 ? 'light' : 'dark');
             if (isCorner[sq]) td.classList.add('corner');
-            if (sq === throne && app.rules.throneEnabled) td.classList.add('throne');
+            if (sq === throneSq) td.classList.add('throne');
             td.title = Tafl.squareName(N, sq);
             const piece = document.createElement('span');
             piece.className = 'piece';
@@ -475,18 +526,10 @@ function onCellClick(sq) {
             playMove(move);
             return;
         }
-        explainIllegalMove(move);
     }
     app.selected = (sq !== app.selected && g.isOwnPiece(sq)) ? sq : -1;
     render();
     renderSuggestions();
-}
-
-/** Tell the player when a move is refused only because of the repetition rule (the rule nobody expects). */
-function explainIllegalMove(move) {
-    if (app.game.isBlockedByRepetition(move)) {
-        showStatus('Not allowed: that move would create the same position for the third time.', false, 4000);
-    }
 }
 
 // --- Board input through pointer events, the same for mouse, touch and pen. A press that moves
@@ -569,12 +612,9 @@ function onPointerUp(event) {
         return;
     }
     const move = encodeMove(from, to);
-    if (to >= 0 && token === app.token && !app.animating) {
-        if (app.game.isLegalMove(move)) {
-            playMove(move, { slide: false });
-            return;
-        }
-        if (to !== from) explainIllegalMove(move);
+    if (to >= 0 && token === app.token && !app.animating && app.game.isLegalMove(move)) {
+        playMove(move, { slide: false });
+        return;
     }
     // Dropped elsewhere: the piece goes back and stays selected, so a click can still move it
     render();
@@ -895,17 +935,20 @@ function setThinking(on) {
 
 function showGameOver() {
     const g = app.game;
-    const winner = g.winner === ATTACKER_PLAYER ? 'Attackers' : 'Defenders';
+    const winner = g.winner === null ? null : g.winner === ATTACKER_PLAYER ? 'Attackers' : 'Defenders';
     const loser = g.winner === ATTACKER_PLAYER ? 'defenders' : 'attackers';
+    const count = app.rules.repetition_count;
     const reason = {
-        escape: 'The king escaped to a corner.',
+        escape: `The king escaped to ${app.rules.king_goal === 'corner' ? 'a corner' : 'the edge'}.`,
         capture: 'The king was captured.',
-        encirclement: 'The king is encircled.',
-        'no-moves': `The ${loser} have no legal moves.`,
-    }[g.endReason()] || '';
-    $('winMessage').innerHTML = `${winner} win!<small>${reason} Click to see the board.</small>`;
+        exit_fort: 'The king is in an exit fort that cannot be broken.',
+        encirclement: 'The attackers have encircled every defender.',
+        repetition: `The same position occurred for the ${ordinal(count)} time.`,
+        no_moves: `The ${loser} cannot move.`,
+    }[g.endReason] || '';
+    $('winMessage').innerHTML = `${winner ? `${winner} win!` : 'Draw!'}<small>${reason} Click to see the board.</small>`;
     $('overlay').classList.remove('hidden');
-    setEval(g.winner === ATTACKER_PLAYER ? 1 : -1, 'game over');
+    setEval(g.winner === null ? 0 : g.winner === ATTACKER_PLAYER ? 1 : -1, 'game over');
 }
 
 function hideOverlay() {
@@ -925,11 +968,10 @@ function showStatus(text, isError = false, ms = 8000) {
 
 /** The line above the board: variant, rules, model, and a warning if the model's rules differ. */
 function updateInfo() {
-    const v = VARIANTS[app.size];
-    $('variant-label').textContent = `${v.name} ${app.size}×${app.size}`;
-    $('rules-label').textContent = rulesSummary(app.size, app.rules);
+    $('variant-label').textContent = `${rulesetTitle(app.rules)} ${app.size}×${app.size}`;
+    $('rules-label').textContent = rulesSummary(app.rules);
     let modelText;
-    if (!app.model) modelText = 'no network model for this board';
+    if (!app.model) modelText = 'no network model for this board size';
     else {
         modelText = `AI: ${app.model.name}`;
         if (app.modelState === 'loading') modelText += ' (loading…)';
@@ -937,10 +979,10 @@ function updateInfo() {
     }
     $('model-label').textContent = `· ${modelText}`;
     const warning = $('model-warning');
-    const trained = app.model && modelRules(app.model.desc);
-    const diffs = trained ? rulesDifferences(app.size, app.rules, trained) : [];
+    const diffs = app.model ? rulesDifferences(app.rules, app.model.rules) : [];
     warning.classList.toggle('hidden', diffs.length === 0);
-    warning.textContent = diffs.length ? `⚠ The model was trained with other rules: ${diffs.join(', ')}.` : '';
+    warning.textContent = diffs.length
+        ? `⚠ The model was trained with ${rulesetTitle(app.model.rules)}: ${diffs.join(', ')}.` : '';
     if (app.modelState === 'error') showStatus(`The model failed to load: ${app.modelError}`, true, 0);
     else if (app.modelState === 'ready' && $('status-line').classList.contains('error')) $('status-line').classList.add('hidden');
     fillModelSelect($('model-select'), app.size, app.model);
@@ -951,7 +993,7 @@ function updateInfo() {
 function updateHelp() {
     const list = $('rules-text');
     list.innerHTML = '';
-    for (const text of rulesList(app.size, app.rules)) {
+    for (const text of rulesList(app.rules)) {
         const li = document.createElement('li');
         li.textContent = text;
         list.appendChild(li);
@@ -968,7 +1010,7 @@ function fillModelSelect(select, size, selected) {
     if (models.length === 0) {
         const option = document.createElement('option');
         option.value = '';
-        option.textContent = 'No model for this board';
+        option.textContent = 'No model for this board size';
         select.appendChild(option);
         select.disabled = true;
         return;
@@ -977,7 +1019,7 @@ function fillModelSelect(select, size, selected) {
     for (const m of models) {
         const option = document.createElement('option');
         option.value = m.id;
-        option.textContent = m.name;
+        option.textContent = `${m.name} (${rulesetTitle(m.rules)})`;
         select.appendChild(option);
     }
     select.value = selected && selected.size === size ? selected.id : models[0].id;
@@ -1036,51 +1078,43 @@ function closePanels() {
 
 const newGameForm = {
     size: () => Number($('ng-variant').value),
+    rules: () => RULESETS[$('ng-ruleset').value],
     model: () => findModel($('ng-model').value),
-    rules: () => ({
-        kingCapturePieces: Number($('ng-kcp').value),
-        kingCanCapture: $('ng-kcc').checked,
-        throneEnabled: $('ng-throne').checked,
-        throneIsHostile: $('ng-throne-hostile').checked,
-    }),
 };
 
-function setRuleControls(rules) {
-    $('ng-kcp').value = String(rules.kingCapturePieces);
-    $('ng-kcc').checked = rules.kingCanCapture;
-    $('ng-throne').checked = rules.throneEnabled;
-    $('ng-throne-hostile').checked = rules.throneIsHostile;
+function fillRulesetSelect(size, selected) {
+    const select = $('ng-ruleset');
+    select.innerHTML = '';
+    for (const rules of Object.values(RULESETS)) {
+        if (rules.board_size !== size) continue;
+        const option = document.createElement('option');
+        option.value = rules.name;
+        option.textContent = rulesetTitle(rules);
+        select.appendChild(option);
+    }
+    select.value = selected && selected.board_size === size ? selected.name : DEFAULT_RULESETS[size];
 }
 
 function openNewGamePanel() {
     $('ng-variant').value = String(app.size);
+    fillRulesetSelect(app.size, app.rules);
     fillModelSelect($('ng-model'), app.size, app.model);
-    const trained = app.model && modelRules(app.model.desc);
-    $('ng-model-rules').checked = Boolean(trained && Tafl.rulesEqual(trained, app.rules));
-    setRuleControls(app.rules);
     updateNewGamePanel();
     openPanel('newGameText');
 }
 
 function updateNewGamePanel() {
-    const size = newGameForm.size();
+    const rules = newGameForm.rules();
     const model = newGameForm.model();
-    const trained = model && modelRules(model.desc);
-    const useModel = $('ng-model-rules');
-    useModel.disabled = !trained;
-    if (!trained) useModel.checked = false;
-    if (useModel.checked) setRuleControls(trained);
-    $('ng-rules').disabled = useModel.checked;
-    $('ng-throne-hostile').disabled = !$('ng-throne').checked;
-    $('ng-throne-hostile-text').textContent = VARIANTS[size].throneHostileToAttackers
-        ? 'The empty throne is hostile to defenders and the king too (it always is to attackers)'
-        : 'The empty throne is hostile to every piece (otherwise to none)';
+    const info = RULESET_INFO[rules.name];
+    $('ng-ruleset-note').textContent = `${rules.description}: ${rulesSummary(rules)}.` +
+        (info ? ` Defenders win ${info.defenders} human games.` : '');
     $('ng-model-note').textContent = modelNote(model);
-    const rules = Tafl.normalizeRules(newGameForm.rules());
-    const diffs = trained ? rulesDifferences(size, rules, trained) : [];
+    const diffs = model ? rulesDifferences(rules, model.rules) : [];
     const warning = $('ng-warning');
     warning.classList.toggle('hidden', diffs.length === 0);
-    warning.textContent = diffs.length ? `This model was trained with other rules (${diffs.join(', ')}). It will play, but not as well.` : '';
+    warning.textContent = diffs.length
+        ? `This model was trained with ${rulesetTitle(model.rules)} (${diffs.join(', ')}). It will play, but not as well.` : '';
 }
 
 // On phones the player and analysis menus move into the Settings panel, so the board, the players
@@ -1108,8 +1142,7 @@ function loadPrefs() {
 function savePrefs() {
     try {
         localStorage.setItem(PREFS_KEY, JSON.stringify({
-            size: app.size,
-            rules: app.rules,
+            ruleset: app.rules.name,
             modelBySize: app.modelBySize,
             players: app.players,
             evalMode: app.evalMode,
@@ -1202,7 +1235,7 @@ function bindEvents() {
     });
 
     $('undo-btn').addEventListener('click', undo);
-    $('restart-btn').addEventListener('click', () => newGame(app.size, app.rules, app.model));
+    $('restart-btn').addEventListener('click', () => newGame(app.rules, app.model));
     $('new-game-btn').addEventListener('click', openNewGamePanel);
     $('help-btn').addEventListener('click', () => openPanel('helpText'));
     $('settings-btn').addEventListener('click', () => openPanel('settingsText'));
@@ -1217,20 +1250,21 @@ function bindEvents() {
     // New game panel
     $('ng-variant').addEventListener('change', () => {
         const size = newGameForm.size();
-        fillModelSelect($('ng-model'), size, defaultModelFor(size));
-        const trained = newGameForm.model() && modelRules(newGameForm.model().desc);
-        if (!trained) setRuleControls(Tafl.normalizeRules(FALLBACK_RULES[size]));
-        $('ng-model-rules').checked = Boolean(trained);
+        fillRulesetSelect(size, null);
+        fillModelSelect($('ng-model'), size, defaultModelFor(newGameForm.rules()));
+        updateNewGamePanel();
+    });
+    $('ng-ruleset').addEventListener('change', () => {
+        // Switch to a model trained with these rules if there is one; else keep the chosen model
+        const rules = newGameForm.rules();
+        const model = defaultModelFor(rules);
+        if (model && Tafl.rulesEqual(model.rules, rules)) $('ng-model').value = model.id;
         updateNewGamePanel();
     });
     $('ng-model').addEventListener('change', updateNewGamePanel);
-    $('ng-model-rules').addEventListener('change', updateNewGamePanel);
-    for (const id of ['ng-kcp', 'ng-kcc', 'ng-throne', 'ng-throne-hostile']) {
-        $(id).addEventListener('change', updateNewGamePanel);
-    }
     $('ng-start').addEventListener('click', () => {
         closePanels();
-        newGame(newGameForm.size(), newGameForm.rules(), newGameForm.model());
+        newGame(newGameForm.rules(), newGameForm.model());
     });
 
     // Settings panel
@@ -1293,16 +1327,8 @@ async function init() {
         console.error('[Models]', error);
         showStatus(`Could not load the model list: ${error.message}`, true, 0);
     }
-    const size = SIZES.includes(prefs.size) ? prefs.size : 7;
-    const model = defaultModelFor(size);
-    let rules = null;
-    try {
-        if (prefs.rules && prefs.size === size) rules = Tafl.normalizeRules(prefs.rules);
-    } catch (e) {
-        rules = null;
-    }
-    if (!rules) rules = (model && modelRules(model.desc)) || FALLBACK_RULES[size];
-    newGame(size, rules, model);
+    const rules = RULESETS[prefs.ruleset] || RULESETS[DEFAULT_RULESETS[7]];
+    newGame(rules, defaultModelFor(rules));
 }
 
 init();

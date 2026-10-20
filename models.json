@@ -1,84 +1,15 @@
 {
-  "about": "The network models the page offers. Each entry names an .onnx file and its description (.json, as written by convert_to_onnx.py in the training code); board size, input planes, training rules and search settings are read from the description. 'defaults' picks the model a new game of each board size starts with.",
+  "about": "The network models the page offers. Each entry names an .onnx file and its description (.json, as written by convert_to_onnx.py in the training code); board size, input planes, the rule set it was trained with and its search settings are read from the description. 'defaults' picks the model a new game of each rule set starts with; other rule sets of the same board size use the first model of that size.",
   "defaults": {
-    "7": "brandubh_littleboy_decay_fixed_210",
-    "9": "tablut_test_6x48_150",
-    "11": "hnefatafl_baseline_1"
+    "copenhagen": "copenhagen_baseline_16"
   },
   "models": [
     {
-      "id": "brandubh_littleboy_decay_fixed_210",
-      "name": "SE 6x32 · littleboy_decay_fixed · it. 210",
-      "onnx": "checkpoints/brandubh_littleboy_decay_fixed_iter_210.onnx",
-      "info": "checkpoints/brandubh_littleboy_decay_fixed_iter_210.json",
-      "note": "Newest Brandubh network (October 2026)."
-    },
-    {
-      "id": "brandubh_SE_32x6_204",
-      "name": "SE 6x32 · littleboy_decay · it. 204",
-      "onnx": "checkpoints/checkpoint_SE_32x6_iter_204.onnx",
-      "info": "checkpoints/checkpoint_SE_32x6_iter_204.json",
-      "note": "The page's previous default network."
-    },
-    {
-      "id": "brandubh_SE_64x4_232",
-      "name": "SE 4x64 · it. 232",
-      "onnx": "checkpoints/checkpoint_SE_64x4_iter232.onnx",
-      "info": "checkpoints/checkpoint_SE_64x4_iter232.json"
-    },
-    {
-      "id": "brandubh_SE_130",
-      "name": "SE 6x48 · it. 130",
-      "onnx": "checkpoints/checkpoint_SE_iter_130.onnx",
-      "info": "checkpoints/checkpoint_SE_iter_130.json"
-    },
-    {
-      "id": "brandubh_SE_77",
-      "name": "SE 6x48 · it. 77",
-      "onnx": "checkpoints/checkpoint_SE_iter_77.onnx",
-      "info": "checkpoints/checkpoint_SE_iter_77.json"
-    },
-    {
-      "id": "brandubh_small_300",
-      "name": "ResNet 4x64 (small) · it. 300",
-      "onnx": "checkpoints/checkpoint_small_iter_300.onnx",
-      "info": "checkpoints/checkpoint_small_iter_300.json",
-      "note": "Older network; its .onnx file could not be checked against the checkpoint."
-    },
-    {
-      "id": "brandubh_small_150",
-      "name": "ResNet 4x64 (small) · it. 150",
-      "onnx": "checkpoints/checkpoint_small_iter_150.onnx",
-      "info": "checkpoints/checkpoint_small_iter_150.json",
-      "note": "Older network; its .onnx file could not be checked against the checkpoint."
-    },
-    {
-      "id": "brandubh_medium_100",
-      "name": "ResNet 6x96 (medium) · it. 100",
-      "onnx": "checkpoints/checkpoint_medium_iter_100.onnx",
-      "info": "checkpoints/checkpoint_medium_iter_100.json",
-      "note": "Older network; its .onnx file could not be checked against the checkpoint."
-    },
-    {
-      "id": "brandubh_medium_50",
-      "name": "ResNet 6x96 (medium) · it. 50",
-      "onnx": "checkpoints/checkpoint_medium_iter_50.onnx",
-      "info": "checkpoints/checkpoint_medium_iter_50.json",
-      "note": "Older network; its .onnx file could not be checked against the checkpoint."
-    },
-    {
-      "id": "tablut_test_6x48_150",
-      "name": "ResNet 6x48 · test_6x48 · it. 150",
-      "onnx": "checkpoints/tablut_test_6x48_iter_150.onnx",
-      "info": "checkpoints/tablut_test_6x48_iter_150.json",
-      "note": "Under its training rules (king captured by two, no throne) the attackers win nearly every game."
-    },
-    {
-      "id": "hnefatafl_baseline_1",
-      "name": "ResNet 8x64 · baseline · it. 1",
-      "onnx": "checkpoints/hnefatafl_baseline_iter_1.onnx",
-      "info": "checkpoints/hnefatafl_baseline_iter_1.json",
-      "note": "Iteration 1 of a new run: barely trained, a placeholder until better Hnefatafl networks exist."
+      "id": "copenhagen_baseline_16",
+      "name": "ResNet 8x64 · baseline · it. 16",
+      "onnx": "checkpoints/copenhagen_baseline_iter_16.onnx",
+      "info": "checkpoints/copenhagen_baseline_iter_16.json",
+      "note": "Early in training (iteration 16)."
     }
   ]
 }

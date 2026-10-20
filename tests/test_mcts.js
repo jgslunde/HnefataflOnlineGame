@@ -34,7 +34,7 @@ async function main() {
             evaluators[c.model] = { info, evaluator: new NetworkEvaluator(ort, session, info, { cacheSize: 0 }) };
         }
         const { info, evaluator } = evaluators[c.model];
-        const game = new Tafl.TaflGame(c.size, c.rules);
+        const game = new Tafl.TaflGame(c.rules);
         for (const m of c.moves) game.makeMove(m);
 
         const params = modelSearchSettings(info);
