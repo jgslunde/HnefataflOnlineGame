@@ -8,6 +8,9 @@
  * partly in float32, so a near-tie can now and then go the other way; a search counts as matching
  * when every visit count is within 2% of the simulations of Python's.
  *
+ * It also compares the outputs only the page shows: the probabilities of the endings the rules
+ * allow, and the plies left (NetworkEvaluator.evaluateAll).
+ *
  * Usage: (cd tests && npm install) && node tests/test_mcts.js [tests/reference/mcts.json]
  */
 'use strict';
@@ -44,6 +47,15 @@ async function main() {
         const stats = mcts.stats();
 
         const where = `${c.model} after ${c.moves.length} moves`;
+        const all = await evaluator.evaluateAll(game, game.legalMoves());
+        const endingDiff = Math.max(...all.ending.map(e => Math.abs(e.p - c.ending[e.ending])));
+        if (all.ending.map(e => e.ending).join() !== Object.keys(c.ending).join() || !(endingDiff < 1e-4) ||
+            !(Math.abs(all.movesLeft - c.moves_left) < 1e-3 * Math.max(1, c.moves_left))) {
+            console.log(`FAIL ${where}: endings ${JSON.stringify(all.ending)} moves left ${all.movesLeft}, ` +
+                `Python ${JSON.stringify(c.ending)} ${c.moves_left}`);
+            failed++;
+            continue;
+        }
         if (stats.children.map(ch => ch.move).join(',') !== c.children.join(',')) {
             console.log(`FAIL ${where}: root moves differ`);
             failed++;
@@ -59,7 +71,8 @@ async function main() {
         const verdict = maxDiff === 0 ? 'same' : maxDiff <= 0.02 * c.sims ? 'close' : 'FAIL';
         console.log(`${verdict.padEnd(5)} ${where}: max visit difference ${maxDiff}, ` +
             `max prior difference ${priorDiff.toExponential(1)}, root value ${stats.value.toFixed(4)} ` +
-            `(Python ${c.root_value.toFixed(4)}, difference ${valueDiff.toExponential(1)})`);
+            `(Python ${c.root_value.toFixed(4)}, difference ${valueDiff.toExponential(1)}), ` +
+            `${all.movesLeft.toFixed(1)} plies left, endings within ${endingDiff.toExponential(1)}`);
     }
     console.log(`${cases.length} searches: ${exact} identical, ${close} within 2%, ${failed} different.`);
     process.exit(failed === 0 ? 0 : 1);

@@ -6,7 +6,8 @@
  *   {type: 'load', modelId, url, info}         load an ONNX model and its description
  *   {type: 'search', state, params}            MCTS from a position (TaflGame.toState());
  *       params: {sims (0 = until stopped), cPuct, fpuReduction, discount, progressMs, maxSims}
- *   {type: 'evaluate', state}                  one network call: value and move priors
+ *   {type: 'evaluate', state}                  one network call: value, move priors, ending
+ *                                              probabilities and plies left
  *   {type: 'cancel', ids}                      stop/drop jobs (all jobs if ids is missing)
  * Replies: {type: 'progress', id, stats}, {type: 'done', id, ...}, {type: 'error', id, message}.
  * Jobs run one at a time in the order received.
@@ -171,11 +172,11 @@ async function evaluate(job) {
     requireModel(game);
     if (game.gameOver) {
         const value = game.winner === game.currentPlayer ? 1 : -1;
-        self.postMessage({ type: 'done', id, result: { value, children: [], terminal: true } });
+        self.postMessage({ type: 'done', id, result: { value, children: [], terminal: true, ending: null, movesLeft: 0 } });
         return;
     }
     const moves = game.legalMoves();
-    const { priors, value } = await model.evaluator.evaluate(game, moves);
+    const { priors, value, ending, movesLeft } = await model.evaluator.evaluateAll(game, moves);
     const children = moves.map((move, i) => ({ move, prior: priors[i] }));
-    self.postMessage({ type: 'done', id, result: { value, children, terminal: false } });
+    self.postMessage({ type: 'done', id, result: { value, children, terminal: false, ending, movesLeft } });
 }

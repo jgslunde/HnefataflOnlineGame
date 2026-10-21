@@ -76,7 +76,8 @@ def snapshot(game, with_history):
 
 def result(game):
     return {'board_after': board_string(game.board), 'player_after': int(game.current_player),
-            'game_over': bool(game.game_over), 'winner': None if game.winner is None else int(game.winner)}
+            'game_over': bool(game.game_over), 'winner': None if game.winner is None else int(game.winner),
+            'end_reason': game.end_reason}
 
 
 def captures_something(game, move):

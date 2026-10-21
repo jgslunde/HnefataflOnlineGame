@@ -5,7 +5,8 @@ Write reference searches of the Python MCTS (mcts.py of the training code), for 
 For each model in the list, plays a few random games and, at some plies, runs mcts.py's search
 with the model's own search settings (from its .json). The network is the same .onnx file the
 browser uses, run with onnxruntime. The visit counts of every root move are recorded; mcts.js run
-on the same positions with onnxruntime-web should give the same counts.
+on the same positions with onnxruntime-web should give the same counts. So are the network's
+ending probabilities (a softmax over the endings the rules allow) and plies left at the root.
 
 Usage (needs the training code's Python environment, with scipy and onnxruntime):
     python tests/make_mcts_reference.py /path/to/Hnefatafl_RL [--sims 200] [--out tests/reference/mcts.json]
@@ -26,16 +27,18 @@ parser.add_argument('training_dir')
 parser.add_argument('--sims', type=int, default=200)
 parser.add_argument('--out', default=os.path.join(HERE, 'reference', 'mcts.json'))
 parser.add_argument('--models', nargs='*', default=[
-    'checkpoints/copenhagen_baseline_iter_16',
+    'checkpoints/brandubh_baseline_iter_25',
+    'checkpoints/sami_tablut_baseline_iter_8',
+    'checkpoints/copenhagen_baseline_iter_5',
 ])
 args = parser.parse_args()
 sys.path.insert(0, os.path.abspath(args.training_dir))
 
 import onnxruntime as ort  # noqa: E402
 import torch  # noqa: E402
-from features import FeatureSpec  # noqa: E402
+from features import FeatureSpec, build_features  # noqa: E402
 from mcts import MCTS  # noqa: E402
-from tafl import Rules, Tafl  # noqa: E402
+from tafl import ENDINGS, Rules, Tafl  # noqa: E402
 
 
 class OnnxNetwork:
@@ -49,14 +52,23 @@ class OnnxNetwork:
         return self
 
     def __call__(self, x):
-        policy, value = self.session.run(None, {self.input_name: x.numpy()})
-        return torch.from_numpy(policy), torch.from_numpy(value)
+        return tuple(torch.from_numpy(o) for o in self.session.run(None, {self.input_name: x.numpy()}))
 
 
 def feature_spec(planes):
     history = sum(1 for p in planes if p.startswith('attackers_t'))
     return FeatureSpec(history_length=history, constant_planes='ones' in planes,
                        mobility_planes='reach_attackers' in planes, region_plane='king_region' in planes)
+
+
+def outlook(network, game, spec):
+    """The network's ending probabilities over the endings the rules allow, and its plies left."""
+    x = torch.from_numpy(build_features(game, spec)[None].astype(np.float32))
+    _, _, ending, moves_left = network(x)
+    allowed = game.rules.endings()
+    logits = np.array([float(ending[0, ENDINGS.index(e)]) for e in allowed])
+    p = np.exp(logits - logits.max())
+    return dict(zip(allowed, (p / p.sum()).tolist())), float(moves_left[0, 0])
 
 
 def pack(move, n):
@@ -75,8 +87,9 @@ def main():
         params = dict(c_puct=search.get('c_puct') or 1.5,
                       fpu_reduction=search.get('fpu_reduction') if search.get('fpu_reduction') is not None else -0.25,
                       search_discount=search.get('discount') or 1.0)
-        mcts = MCTS(OnnxNetwork(os.path.join(REPO, base + '.onnx')), num_simulations=args.sims,
-                    feature_spec=feature_spec(info['input']['planes']), **params)
+        network = OnnxNetwork(os.path.join(REPO, base + '.onnx'))
+        spec = feature_spec(info['input']['planes'])
+        mcts = MCTS(network, num_simulations=args.sims, feature_spec=spec, **params)
         for game_index in range(6):
             game = Tafl(rules)
             played = []
@@ -90,6 +103,7 @@ def main():
                     break
                 mcts.search(game)
                 root = mcts.root
+                ending, moves_left = outlook(network, game, spec)
                 cases.append({
                     'model': base, 'rules': info['rules'], 'size': n, 'moves': list(played),
                     'sims': args.sims, 'params': params,
@@ -97,6 +111,7 @@ def main():
                     'visits': [c.visit_count for c in root.children.values()],
                     'priors': [float(c.prior) for c in root.children.values()],
                     'root_value': root.mean_value,
+                    'ending': ending, 'moves_left': moves_left,
                 })
                 print(f'{base} game {game_index} ply {game.move_count}: top visits '
                       f'{sorted(cases[-1]["visits"], reverse=True)[:5]}')

@@ -67,9 +67,9 @@ function checkBefore(game, ply, planes, where, stats) {
 
 function checkAfter(game, ply, where) {
     if (boardString(game.board) !== ply.board_after) return fail(where, 'board after the move differs');
-    if (game.gameOver !== ply.game_over || game.winner !== ply.winner) {
+    if (game.gameOver !== ply.game_over || game.winner !== ply.winner || game.endReason !== ply.end_reason) {
         return fail(where, `after the move: JS game_over=${game.gameOver} winner=${game.winner} (${game.endReason}), ` +
-            `Python game_over=${ply.game_over} winner=${ply.winner}`);
+            `Python game_over=${ply.game_over} winner=${ply.winner} (${ply.end_reason})`);
     }
     if (!game.gameOver && game.currentPlayer !== ply.player_after) return fail(where, 'player to move after the move differs');
     return true;

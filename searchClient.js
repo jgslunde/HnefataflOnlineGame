@@ -60,7 +60,7 @@ class SearchClient {
         return this._send({ type: 'search', state: game.toState(), params }, onProgress);
     }
 
-    /** One network evaluation: resolves with {result: {value, children: [{move, prior}]}}. */
+    /** One network evaluation: resolves with {result: {value, children: [{move, prior}], ending: [{ending, p}], movesLeft}}. */
     evaluate(game) {
         return this._send({ type: 'evaluate', state: game.toState() });
     }

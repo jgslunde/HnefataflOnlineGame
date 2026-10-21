@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * End-to-end test of the page in headless Chrome: serves the repository, opens index.html and
- * plays through the main features on all three boards (human moves, the NN + MCTS AI, Minimax,
- * undo, new games with other rules, eval bar and suggestions), failing on any error in the page or
+ * plays through the main features on all three boards (the main menu, human moves, the NN + MCTS
+ * AI, Minimax, undo, new games with other rules, eval bar and suggestions), failing on any error in the page or
  * the search worker. Screenshots go to tests/screenshots/.
  *
  * Needs Node 22 or newer (built-in WebSocket) and Chrome or Chromium; the page loads
@@ -182,15 +182,49 @@ async function main() {
         const count = (selector) => evaluate(`document.querySelectorAll('${selector}').length`);
         const highlight = (sq) => evaluate(`getComputedStyle(document.querySelector('#board td[data-sq="${sq}"]'), '::before').opacity`);
 
-        // --- Load: Brandubh 2 (7x7), which has no network yet ---
+        // --- Load: the main menu, set to Brandubh 2 (7x7) ---
+        const menuOpen = () => evaluate('!document.getElementById("menuText").classList.contains("hidden")');
+        const escape = () => evaluate('document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))');
+        const offered = (id, value) => evaluate(`!document.querySelector('#${id} option[value="${value}"]').disabled`);
         await evaluate('localStorage.clear()');
         await browser.send('Page.reload', {}, page);
-        await waitFor('typeof app !== "undefined" && app.game && app.models.length > 0', 'the page and the model list', 60000);
-        check(await evaluate('app.rules.name') === 'brandubh' && await evaluate('app.cells.length') === 49, 'the page opens with Brandubh 2 on a 7x7 board');
+        await waitFor('typeof app !== "undefined" && app.models.length > 0 && !document.querySelector("#menuText .panel-content.pending")',
+            'the page, the model list and the menu', 60000);
+        check(await menuOpen() && !(await evaluate('app.started')) && await hidden('menu-back') && await hidden('menu-close'),
+            'the page opens at the main menu, with no game to go back to');
+        await screenshot('start_menu.png');
+        await escape();
+        check(await menuOpen(), 'Escape does not close it before the first game');
+        check(await evaluate('document.getElementById("ng-variant").value') === '7' && await evaluate('document.getElementById("ng-ruleset").value') === 'brandubh',
+            'it offers Brandubh 2 on a 7x7 board first');
+        check(await offered('ng-defender-type', 'mcts') && await offered('ng-defender-type', 'minimax') &&
+            await evaluate('document.getElementById("ng-model").value') === 'brandubh_baseline_25',
+            'on 7x7 it offers both AIs, with the Brandubh network');
+        await setSelect('ng-variant', '11');
+        check(await offered('ng-defender-type', 'mcts') && !(await offered('ng-defender-type', 'minimax')) && !(await offered('ng-eval-mode', 'heuristic')),
+            'on 11x11 it offers the NN + MCTS player, and neither Minimax nor the heuristics');
+        await setSelect('ng-variant', '7');
+        await click('#ng-start');
+        await waitFor('app.started && app.rules.name === "brandubh"', 'the Brandubh game');
+        check(!(await menuOpen()) && await evaluate('app.cells.length') === 49,
+            '"Start game" starts Brandubh 2 on a 7x7 board');
         check(await count('#board td.corner') === 4 && await count('#board td.throne') === 1, 'its corners and throne are marked');
-        check(await evaluate('app.model') === null && await evaluate('document.querySelector(\'#defender-type option[value="mcts"]\').disabled'),
-            'without a 7x7 network the NN + MCTS player is not offered');
-        check((await evaluate('document.getElementById("eval-detail").textContent')).includes('no network'), 'the eval bar says there is no network');
+        await waitFor('app.modelState === "ready" && app.analysis.stats && app.analysis.stats.visits >= 200', 'the Brandubh model and its analysis', 60000);
+        check(true, `the Brandubh network evaluates the position (${await evaluate('document.getElementById("eval-value").textContent')})`);
+
+        // --- The network's outlook: hidden until the pointer is on the eval bar ---
+        const outlookShown = () => evaluate('getComputedStyle(document.getElementById("eval-outlook")).display !== "none"');
+        await waitFor('app.analysis.nn && app.analysis.nn.ending', 'the network\'s outlook');
+        check(!(await outlookShown()), 'the outlook is hidden at first');
+        const [ex, ey] = await evaluate('(() => { const r = document.getElementById("eval-bar-container").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()');
+        await mouse('mouseMoved', ex, ey, 0);
+        const outlook = await evaluate('document.getElementById("eval-outlook").innerText');
+        check(await outlookShown() && /Moves left\s+about \d+/.test(outlook) && await count('#outlook-endings li') >= 2 && outlook.includes('%'),
+            `pointing at the eval bar shows it: ${outlook.replace(/\s+/g, ' ')}`);
+        check(!outlook.includes('Exit fort') && !outlook.includes('Encirclement'), 'it leaves out the endings Brandubh does not have');
+        await screenshot('outlook.png');
+        await mouse('mouseMoved', 5, 5, 0);
+        check(!(await outlookShown()), 'it hides again when the pointer leaves');
         await click('#help-btn');
         check((await evaluate('document.getElementById("rules-text").textContent')).includes('on the throne only when attackers surround him on all four sides'),
             'the help lists the rules of Brandubh 2');
@@ -243,7 +277,7 @@ async function main() {
         await screenshot('brandubh.png');
 
         // --- Sami Tablut (9x9): defenders first, the king escapes to the edge ---
-        await click('#new-game-btn');
+        await click('#menu-btn');
         await setSelect('ng-variant', '9');
         check(await evaluate('[...document.getElementById("ng-ruleset").options].map(o => o.value).join()') === 'sami_tablut,sea_battle_9x9,market_hnefatafl',
             'the panel offers the three 9x9 rule sets');
@@ -254,18 +288,24 @@ async function main() {
         await screenshot('sami_tablut.png');
 
         // --- Copenhagen (11x11) with its network ---
-        await click('#new-game-btn');
+        await click('#menu-btn');
         await setSelect('ng-variant', '11');
         check(await evaluate('document.getElementById("ng-ruleset").value') === 'copenhagen' &&
-            await evaluate('document.getElementById("ng-model").value') === 'copenhagen_baseline_16', 'an 11x11 game defaults to Copenhagen and its model');
+            await evaluate('document.getElementById("ng-model").value') === 'copenhagen_baseline_5', 'an 11x11 game defaults to Copenhagen and its model');
+        // The players are chosen in the menu too: a human attacker against the network
+        await setSelect('ng-defender-type', 'mcts');
+        check(!(await hidden('ng-defender-mcts')) && await hidden('ng-attacker-mcts'), 'the menu shows the strength of an AI player');
+        await setRange('ng-defender-sims', 100);
         await click('#ng-start');
         await waitFor('app.rules.name === "copenhagen" && app.modelState === "ready"', 'the Copenhagen model', 60000);
+        check(await evaluate('app.players.defender.type') === 'mcts' && await evaluate('app.players.defender.sims') === 100 &&
+            await evaluate('document.getElementById("defender-type").value') === 'mcts' &&
+            await evaluate('document.getElementById("defender-mcts-difficulty").value') === '100',
+            'the game gets the players of the menu, and the menus below the board show them');
         check(await hidden('model-warning'), 'no rules warning when the model plays its own rules');
         check(await count('#board td.corner') === 4 && await count('#board td.throne') === 1, 'Copenhagen has corners and a throne');
         await waitFor('app.analysis.stats && app.analysis.stats.visits >= 200', 'the eval bar analysis', 60000);
         console.log(`     analysis: ${await evaluate('document.getElementById("eval-value").textContent')} (${await evaluate('document.getElementById("eval-detail").textContent')})`);
-        await setRange('defender-mcts-difficulty', 100);
-        await setSelect('defender-type', 'mcts');
         await click('#board td[data-sq="3"]');
         await click('#board td[data-sq="14"]');
         await waitFor('app.game.moveCount === 2 && !app.animating', 'the AI defender to answer', 60000);
@@ -289,6 +329,15 @@ async function main() {
         await setSelect('defender-type', 'mcts');
         await waitFor('app.game.moveCount >= 6 || app.game.gameOver', '6 AI moves', 120000);
         check(true, `AI against AI plays (${(await evaluate('app.msPerCall')).toFixed(2)} ms per network call)`);
+        await click('#menu-btn');
+        await idle();
+        const pausedAt = await evaluate('app.game.moveCount');
+        await sleep(2000);
+        check(await evaluate('app.game.moveCount') === pausedAt && await evaluate('app.analysisJobs.length') === 0 &&
+            !(await hidden('menu-back')), 'the game waits while the menu is open');
+        await click('#menu-back');
+        await waitFor(`app.game.moveCount > ${pausedAt} || app.game.gameOver`, 'the game to go on', 60000);
+        check(!(await menuOpen()), '"Back to game" goes on with it');
         await setSelect('attacker-type', 'human');
         await setSelect('defender-type', 'human');
         await idle();
@@ -301,12 +350,12 @@ async function main() {
         await evaluate('document.getElementById("continuous-eval-toggle").click()');
 
         // --- Fetlar with the Copenhagen model: the rules differ, so both places warn ---
-        await click('#new-game-btn');
+        await click('#menu-btn');
         await setSelect('ng-ruleset', 'fetlar');
         const warning = await evaluate('document.getElementById("ng-warning").textContent');
         check(!(await hidden('ng-warning')) && warning.includes('shieldwall') && warning.includes('exit fort'),
             'the panel warns that the model was trained with other rules');
-        await screenshot('new_game_panel.png');
+        await screenshot('menu.png');
         await click('#ng-start');
         await waitFor('app.rules.name === "fetlar" && app.modelState === "ready"', 'the Fetlar game', 60000);
         check(!(await hidden('model-warning')), 'the line above the board warns about the rules');
@@ -333,12 +382,37 @@ async function main() {
         await touchTap(38);
         await waitFor('app.selected === 38', 'the tap to select the piece', 3000);
         check(true, 'a tap selects a piece');
+        // A tap on the eval bar shows the outlook (no hover on a touch screen), inside the screen
+        await waitFor('app.analysis.nn && app.analysis.nn.ending', 'the network\'s outlook');
+        const [tx, ty] = await evaluate('(() => { const r = document.getElementById("AI-eval").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()');
+        await touch('touchStart', [{ x: tx, y: ty }]);
+        await touch('touchEnd', []);
+        await waitFor('document.getElementById("AI-eval").classList.contains("show-outlook")', 'the tap on the eval bar', 3000);
+        check(await outlookShown() && await evaluate('(() => { const r = document.getElementById("eval-outlook").getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0; })()'),
+            'on a phone a tap on the eval bar shows the outlook, inside the screen');
+        await screenshot('phone_outlook.png');
+        await touch('touchStart', [{ x: 10, y: 10 }]);
+        await touch('touchEnd', []);
+        await waitFor('!document.getElementById("AI-eval").classList.contains("show-outlook")', 'the tap elsewhere', 3000);
+        check(!(await outlookShown()), 'a tap elsewhere hides it');
         // The rules warning is showing: the longest top line there is
         for (const [width, height] of [[390, 844], [375, 667], [360, 640]]) {
             await phone(width, height);
             check(await fits(), `everything fits on a ${width}x${height} screen without scrolling`);
         }
         await screenshot('phone_small.png');
+        // The menu fits too, with an AI's strength showing; "Back to game" leaves the game as it was
+        await click('#menu-btn');
+        await setSelect('ng-attacker-type', 'mcts');
+        for (const [width, height] of [[390, 844], [375, 667], [360, 640]]) {
+            await phone(width, height);
+            check(await evaluate('(() => { const m = document.getElementById("menuText"); return m.scrollHeight <= m.clientHeight + 1; })()'),
+                `the menu fits on a ${width}x${height} screen without scrolling`);
+        }
+        await screenshot('phone_menu.png');
+        await escape();
+        check(!(await menuOpen()) && await evaluate('app.players.attacker.type') === 'human' && await evaluate('app.rules.name') === 'fetlar',
+            'Escape goes back to the game, without the menu\'s changes');
     } finally {
         browser.close();
         server.close();

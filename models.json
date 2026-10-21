@@ -1,15 +1,31 @@
 {
   "about": "The network models the page offers. Each entry names an .onnx file and its description (.json, as written by convert_to_onnx.py in the training code); board size, input planes, the rule set it was trained with and its search settings are read from the description. 'defaults' picks the model a new game of each rule set starts with; other rule sets of the same board size use the first model of that size.",
   "defaults": {
-    "copenhagen": "copenhagen_baseline_16"
+    "brandubh": "brandubh_baseline_25",
+    "sami_tablut": "sami_tablut_baseline_8",
+    "copenhagen": "copenhagen_baseline_5"
   },
   "models": [
     {
-      "id": "copenhagen_baseline_16",
-      "name": "ResNet 8x64 · baseline · it. 16",
-      "onnx": "checkpoints/copenhagen_baseline_iter_16.onnx",
-      "info": "checkpoints/copenhagen_baseline_iter_16.json",
-      "note": "Early in training (iteration 16)."
+      "id": "brandubh_baseline_25",
+      "name": "ResNet 6x32 SE · baseline · it. 25",
+      "onnx": "checkpoints/brandubh_baseline_iter_25.onnx",
+      "info": "checkpoints/brandubh_baseline_iter_25.json",
+      "note": "Early in training (iteration 25)."
+    },
+    {
+      "id": "sami_tablut_baseline_8",
+      "name": "ResNet 6x48 · baseline · it. 8",
+      "onnx": "checkpoints/sami_tablut_baseline_iter_8.onnx",
+      "info": "checkpoints/sami_tablut_baseline_iter_8.json",
+      "note": "Early in training (iteration 8)."
+    },
+    {
+      "id": "copenhagen_baseline_5",
+      "name": "ResNet 8x64 · baseline · it. 5",
+      "onnx": "checkpoints/copenhagen_baseline_iter_5.onnx",
+      "info": "checkpoints/copenhagen_baseline_iter_5.json",
+      "note": "Very early in training (iteration 5)."
     }
   ]
 }

@@ -5,8 +5,12 @@
  * each .onnx file: board size, input planes in order, policy layout, the rule set the network was
  * trained with (ruleset, and all its fields in rules) and the search settings of its training run.
  * Everything model-specific comes from there: the input planes are built from input.planes, never
- * from assumptions. Descriptions without a ruleset key belong to models trained before the named
- * rule sets; the current engine cannot play their rules, so they are refused.
+ * from assumptions.
+ *
+ * A model has four outputs (read by name): policy_logits and value, which the search uses, and
+ * ending_logits (how the game will end, over Tafl.ENDINGS) and moves_left (plies until the end),
+ * which the page only shows. Models from before the last two outputs (descriptions without an
+ * ending key) and from before the named rule sets (without a ruleset key) are deprecated and refused.
  *
  * Works with onnxruntime-web in the Web Worker and in Node (tests); the `ort` object is passed in.
  */
@@ -31,15 +35,34 @@
         };
     }
 
+    // The outputs of convert_to_onnx.py, in order
+    const OUTPUT_NAMES = ['policy_logits', 'value', 'ending_logits', 'moves_left'];
+
     /**
-     * The rule set a model was trained with, from its description. Throws for a description without
-     * a named rule set (a model trained before them).
+     * The rule set a model was trained with, from its description. Throws for a deprecated model:
+     * one without a named rule set, or without the ending and moves-left outputs.
      */
     function modelRules(info) {
         if (!info || !info.ruleset || !info.rules) {
             throw new Error('the model description names no rule set (a model trained before the named rule sets)');
         }
+        if (!info.ending) {
+            throw new Error('the model has no ending and moves-left outputs (a deprecated model)');
+        }
         return Tafl.normalizeRules(info.rules);
+    }
+
+    /**
+     * The probability of each ending the rules allow, from the ending logits: a softmax over those
+     * endings only, as in training. Returns [{ending, p}] in the order of Tafl.ENDINGS.
+     */
+    function endingProbabilities(logits, rules) {
+        const allowed = Tafl.endings(rules);
+        const values = allowed.map(e => logits[Tafl.ENDINGS.indexOf(e)]);
+        const max = Math.max(...values);
+        const exps = values.map(v => Math.exp(v - max));
+        const sum = exps.reduce((a, b) => a + b, 0);
+        return allowed.map((ending, i) => ({ ending, p: exps[i] / sum }));
     }
 
     class NetworkEvaluator {
@@ -63,12 +86,14 @@
             }
             this.historyNeeded = Tafl.historyNeeded(this.planes);
             this.policySize = this.N * this.N * 4 * (this.N - 1);
-            // Old exports use input/policy/value, convert_to_onnx.py board_state/policy_logits/value
             this.inputName = session.inputNames[0];
             const outputs = session.outputNames;
-            this.policyName = outputs.find(n => /policy/i.test(n)) || outputs[0];
-            this.valueName = outputs.find(n => /value/i.test(n) && n !== this.policyName) ||
-                outputs.find(n => n !== this.policyName);
+            if (outputs.length < OUTPUT_NAMES.length) {
+                throw new Error(`The model has ${outputs.length} outputs, expected ${OUTPUT_NAMES.join(', ')}`);
+            }
+            // By name, or else by position
+            [this.policyName, this.valueName, this.endingName, this.movesLeftName] =
+                OUTPUT_NAMES.map((name, i) => (outputs.includes(name) ? name : outputs[i]));
             // The network output depends only on the input planes. Without history planes those
             // depend only on the position key and the (fixed) rules, so outputs can be reused when
             // a position comes up again: in transpositions, and in later searches. This changes
@@ -86,7 +111,10 @@
             this.cache.clear();
         }
 
-        /** Raw network output for a position: {logits (all moves), value}. */
+        /**
+         * Raw network output for a position: {logits (all moves), value, ending (logits over
+         * Tafl.ENDINGS), movesLeft (plies)}.
+         */
         async run(game) {
             if (game.N !== this.N) throw new Error(`The model is for ${this.N}x${this.N}, the game is ${game.N}x${game.N}`);
             const N = this.N;
@@ -100,7 +128,21 @@
             if (logits.length !== this.policySize) {
                 throw new Error(`Policy output has ${logits.length} entries, expected ${this.policySize}`);
             }
-            return { logits, value: results[this.valueName].data[0] };
+            const ending = results[this.endingName].data;
+            if (ending.length !== Tafl.ENDINGS.length) {
+                throw new Error(`Ending output has ${ending.length} entries, expected ${Tafl.ENDINGS.length}`);
+            }
+            return { logits, value: results[this.valueName].data[0], ending, movesLeft: results[this.movesLeftName].data[0] };
+        }
+
+        /**
+         * Everything the network says about a position, for the page: priors over `moves`, the
+         * value, the probabilities of the endings the rules allow, and the plies left.
+         */
+        async evaluateAll(game, moves) {
+            const { logits, value, ending, movesLeft } = await this.run(game);
+            const priors = softmaxOver(logits, moves.map(m => Tafl.policyIndex(this.N, m)));
+            return { priors, value, ending: endingProbabilities(ending, game.rules), movesLeft };
         }
 
         /**
@@ -149,7 +191,7 @@
         return identities[n];
     }
 
-    const exported = { NetworkEvaluator, modelSearchSettings, modelRules, DEFAULT_SEARCH };
+    const exported = { NetworkEvaluator, modelSearchSettings, modelRules, endingProbabilities, OUTPUT_NAMES, DEFAULT_SEARCH };
     if (typeof module !== 'undefined' && module.exports) module.exports = exported;
     else root.TaflNetwork = exported;
 })(typeof self !== 'undefined' ? self : this);

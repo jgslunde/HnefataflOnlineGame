@@ -99,6 +99,67 @@ body {
     min-height: 1.4vh;
 }
 
+/* The network's outlook: a card that shows while the pointer is on the eval bar (or after a tap) */
+#AI-eval {
+    position: relative;
+    cursor: help;
+}
+
+#eval-outlook {
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 30;
+    width: 36vh;
+    margin-top: 1vh;
+    padding: 1.2vh 1.6vh;
+    background-color: rgba(16, 20, 28, 0.97);
+    border: 1px solid #3a4a62;
+    border-radius: 0.5vh;
+    font-size: 1.9vh;
+    line-height: 1.5;
+    color: #ccc;
+    text-align: left;
+    font-weight: normal;
+}
+
+#AI-eval:hover #eval-outlook,
+#AI-eval.show-outlook #eval-outlook {
+    display: block;
+}
+
+.outlook-title {
+    color: white;
+    font-weight: bold;
+    margin-bottom: 0.4vh;
+}
+
+#outlook-endings {
+    list-style: none;
+    margin: 0.6vh 0 0;
+    padding: 0;
+}
+
+/* "Moves left" and each ending: text on the left, number on the right */
+#outlook-moves,
+#outlook-endings li {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    column-gap: 2vh;
+}
+
+/* The most likely ending stands out */
+#outlook-endings li:first-child {
+    color: white;
+    font-weight: bold;
+}
+
+.outlook-p {
+    min-width: 4.5ch;
+    text-align: right;
+}
+
 #buttons-container {
     display: flex;
     flex-direction: row;
@@ -516,6 +577,38 @@ body.dragging #board td {
     margin-top: 2vh;
 }
 
+/* The main menu covers the whole page: the page opens there, and the game waits behind it (where
+   it shows through, once there is one) */
+#menuText {
+    position: fixed;
+    background-color: black;
+}
+
+#menuText.over-game {
+    background-color: rgba(0, 0, 0, 0.94);
+}
+
+#menuText .panel-content {
+    width: 60vh;
+    margin: auto 0;  /* centred in the height when it fits, from the top when it does not */
+}
+
+/* Until the page has filled in the menu (init in script.js) */
+#menuText .panel-content.pending {
+    visibility: hidden;
+}
+
+.menu-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 2.5vh;
+    align-items: start;
+}
+
+.menu-grid .difficulty input {
+    margin: 0;
+}
+
 .close-btn {
     min-width: 0;
     position: absolute;
@@ -708,6 +801,25 @@ body.dragging #board td {
         font-size: 13px;
     }
 
+    /* Above the eval bar (which is in the middle of the screen), over the board */
+    #eval-outlook {
+        top: auto;
+        right: auto;
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: min(300px, calc(100vw - 32px));
+        box-sizing: border-box;
+        margin: 0 0 8px;
+        padding: 10px 14px;
+        font-size: 15px;
+        border-radius: 4px;
+    }
+
+    #outlook-endings li {
+        column-gap: 16px;
+    }
+
     .eval-title {
         display: inline;
         color: #888;
@@ -810,6 +922,25 @@ body.dragging #board td {
         font-size: 14px;
         max-width: 92vw;
         padding: 20px 12px;
+    }
+
+    #menuText .panel-content {
+        width: 92vw;
+        box-sizing: border-box;
+        padding: 14px 12px;
+    }
+
+    .menu-grid {
+        column-gap: 12px;
+    }
+
+    #menuText .warning {
+        font-size: 12px;
+        margin: 6px 0 0;
+    }
+
+    #menuText .range-ends {
+        display: none;
     }
 
     .panel-title {

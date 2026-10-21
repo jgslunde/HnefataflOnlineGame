@@ -32,6 +32,12 @@
                     <div id="eval-bar"></div>
                 </div>
                 <div id="eval-detail"></div>
+                <!-- The network's outlook: on hover, or after a tap on a touch screen -->
+                <div id="eval-outlook" role="tooltip">
+                    <div class="outlook-title">The network expects</div>
+                    <div id="outlook-moves"></div>
+                    <ol id="outlook-endings"></ol>
+                </div>
             </div>
             <div id="attacker-label" class="active-player"><span class="side-name">Attacker:</span> <span class="side-type">Human</span></div>
         </div>
@@ -58,13 +64,20 @@
                     The evaluation is shown from the attackers' side: +1 means the attackers win, −1 the defenders.
                     Move suggestions show each move's share of the search, and its value for the side to move.
                 </p>
+                <p>
+                    Point at the eval bar (tap it on a phone) to see what the network expects from the current
+                    position: how many more moves the game will last (the moves of both sides counted), and how
+                    likely each way of ending it is.
+                    These are the network's own guesses, without a search.
+                </p>
             </div>
         </div>
 
-        <div id="newGameText" class="panel hidden">
-            <div class="panel-content">
-                <button class="close-btn" data-close="newGameText" aria-label="Close">✕</button>
-                <div class="panel-title">New game</div>
+        <!-- The main menu: the page opens here, and the game waits while it is open (openMenu in script.js) -->
+        <div id="menuText" class="panel">
+            <div class="panel-content pending">
+                <button id="menu-close" class="close-btn hidden" aria-label="Back to the game">✕</button>
+                <div class="panel-title">Main menu</div>
                 <label class="field">Board
                     <select id="ng-variant">
                         <option value="7">7×7 (Brandubh)</option>
@@ -76,14 +89,71 @@
                     <select id="ng-ruleset"></select>
                 </label>
                 <div id="ng-ruleset-note" class="hint"></div>
+                <div class="menu-grid">
+                    <div>
+                        <label class="field">Attackers (black)
+                            <select id="ng-attacker-type">
+                                <option value="human">Human</option>
+                                <option value="mcts">AI: NN + MCTS</option>
+                                <option value="minimax">AI: Minimax</option>
+                            </select>
+                        </label>
+                        <div id="ng-attacker-mcts" class="difficulty hidden">
+                            <label for="ng-attacker-sims">Simulations: <span id="ng-attacker-sims-value">200</span></label>
+                            <input type="range" id="ng-attacker-sims" min="10" max="2000" step="10" value="200">
+                            <div class="range-ends"><span>Easy</span><span>Hard</span></div>
+                        </div>
+                        <div id="ng-attacker-minimax" class="difficulty hidden">
+                            <label for="ng-attacker-depth">Depth: <span id="ng-attacker-depth-value">4</span></label>
+                            <input type="range" id="ng-attacker-depth" min="1" max="7" step="1" value="4">
+                            <div class="range-ends"><span>Easy</span><span>Hard</span></div>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="field">Defenders (white)
+                            <select id="ng-defender-type">
+                                <option value="human">Human</option>
+                                <option value="mcts">AI: NN + MCTS</option>
+                                <option value="minimax">AI: Minimax</option>
+                            </select>
+                        </label>
+                        <div id="ng-defender-mcts" class="difficulty hidden">
+                            <label for="ng-defender-sims">Simulations: <span id="ng-defender-sims-value">200</span></label>
+                            <input type="range" id="ng-defender-sims" min="10" max="2000" step="10" value="200">
+                            <div class="range-ends"><span>Easy</span><span>Hard</span></div>
+                        </div>
+                        <div id="ng-defender-minimax" class="difficulty hidden">
+                            <label for="ng-defender-depth">Depth: <span id="ng-defender-depth-value">4</span></label>
+                            <input type="range" id="ng-defender-depth" min="1" max="7" step="1" value="4">
+                            <div class="range-ends"><span>Easy</span><span>Hard</span></div>
+                        </div>
+                    </div>
+                </div>
                 <label class="field">AI model
                     <select id="ng-model"></select>
                 </label>
                 <div id="ng-model-note" class="hint"></div>
                 <div id="ng-warning" class="warning hidden"></div>
+                <div class="menu-grid">
+                    <label class="field">Eval bar
+                        <select id="ng-eval-mode">
+                            <option value="off">Off</option>
+                            <option value="heuristic">Heuristics</option>
+                            <option value="nn">NN</option>
+                            <option value="nn-mcts">NN + MCTS</option>
+                        </select>
+                    </label>
+                    <label class="field">Move suggestions
+                        <select id="ng-policy-mode">
+                            <option value="off">Off</option>
+                            <option value="nn">NN (policy)</option>
+                            <option value="nn-mcts">NN + MCTS</option>
+                        </select>
+                    </label>
+                </div>
                 <div class="panel-buttons">
-                    <button id="ng-start" class="action-btn">Start</button>
-                    <button data-close="newGameText" class="info-btn">Cancel</button>
+                    <button id="ng-start" class="action-btn">Start game</button>
+                    <button id="menu-back" class="info-btn hidden">Back to game</button>
                 </div>
             </div>
         </div>
@@ -218,7 +288,7 @@
             <div class="button-row">
                 <button id="undo-btn" class="action-btn">Undo</button>
                 <button id="restart-btn" class="action-btn">Restart</button>
-                <button id="new-game-btn" class="action-btn">New game</button>
+                <button id="menu-btn" class="action-btn">Menu</button>
             </div>
             <div class="button-row">
                 <button id="help-btn" class="info-btn">Help</button>

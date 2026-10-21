@@ -42,6 +42,17 @@
     };
     // What the repetition_count-th occurrence of a position means, whichever side made the move
     const REPETITION_RULES = { defenders_lose: 'a win for the attackers', draw: 'a draw' };
+    // The ways a game can end, the same list for all rule sets: the endReason of a finished game and
+    // the classes of the network's ending output, in the order of tafl.ENDINGS. "x_blocked" means
+    // side x has no legal move (and loses); "move_limit" is the draw that training imposes after
+    // max_game_length plies (the page plays without a limit).
+    const ENDINGS = ['king_escaped', 'exit_fort', 'attackers_blocked', 'king_captured', 'encircled',
+        'defenders_blocked', 'repetition', 'move_limit'];
+
+    /** The endings of ENDINGS that `rules` allow, in the order of ENDINGS (Rules.endings). */
+    function endings(rules) {
+        return ENDINGS.filter(e => !(e === 'exit_fort' && !rules.exit_fort) && !(e === 'encircled' && !rules.encirclement));
+    }
 
     const RULE_FIELDS = ['name', 'description', 'setup', 'first_player', 'king_goal', 'king_capture',
         'king_armed', 'throne', 'throne_hostile', 'encirclement', 'shieldwall', 'exit_fort', 'repetition',
@@ -297,7 +308,7 @@
             this.currentPlayer = ATTACKER_PLAYER;
             this.gameOver = false;
             this.winner = null;      // stays null for a draw
-            this.endReason = null;   // escape, capture, exit_fort, encirclement, repetition, no_moves
+            this.endReason = null;   // one of ENDINGS once the game is over
             this.moveCount = 0;
             // Keys of the positions since the last capture, oldest first, the current one last. A
             // capture removes pieces for good, so no earlier position can occur again; for the
@@ -530,21 +541,21 @@
             else this.repKeys.push(key);
 
             if (piece === KING && this._isGoal(to)) {
-                this._end(DEFENDER_PLAYER, 'escape');
+                this._end(DEFENDER_PLAYER, 'king_escaped');
             } else if (kingCaptured) {
                 const king = b.indexOf(KING);
                 this._flip(king, KING);
                 b[king] = EMPTY;
                 removed.push(king);
-                this._end(ATTACKER_PLAYER, 'capture');
+                this._end(ATTACKER_PLAYER, 'king_captured');
             } else if (this.rules.exit_fort && mover === DEFENDER_PLAYER && this.isKingInExitFort()) {
                 this._end(DEFENDER_PLAYER, 'exit_fort');
             } else if (this.rules.encirclement && mover === ATTACKER_PLAYER && this.areDefendersEncircled()) {
-                this._end(ATTACKER_PLAYER, 'encirclement');
+                this._end(ATTACKER_PLAYER, 'encircled');
             } else if (this.repetitionCount() >= this.rules.repetition_count) {
                 this._end(this.rules.repetition === 'defenders_lose' ? ATTACKER_PLAYER : null, 'repetition');
             } else if (this.legalMoves().length === 0) {
-                this._end(mover, 'no_moves');
+                this._end(mover, mover === ATTACKER_PLAYER ? 'defenders_blocked' : 'attackers_blocked');
             }
             return removed;
         }
@@ -898,7 +909,7 @@
 
     const Tafl = {
         EMPTY, ATTACKER, DEFENDER, KING, ATTACKER_PLAYER, DEFENDER_PLAYER,
-        VARIANTS, RULESETS, KING_CAPTURE_RULES, REPETITION_RULES, TaflGame,
+        VARIANTS, RULESETS, KING_CAPTURE_RULES, REPETITION_RULES, ENDINGS, endings, TaflGame,
         makeRules, normalizeRules, rulesKey, rulesEqual, geometry,
         encodeMove, moveFrom, moveTo, policyIndex, squareName, moveName,
         parsePlanes, historyNeeded, buildFeatures, reachPlanes, defenderRegion,

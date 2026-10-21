@@ -59,6 +59,7 @@ const app = {
     model: null,          // the model of the current game (manifest entry) or null
     modelState: 'none',   // none, loading, ready, error
     modelError: null,
+    manifestError: null,  // why models.json could not be loaded, if it could not
     msPerCall: null,
     searchParams: modelSearchSettings(null),
     players: {
@@ -70,6 +71,8 @@ const app = {
     temperature: 0.4,
     analysisSims: 200,
     continuous: false,
+    started: false,       // a game has been started from the menu (before, the board is only a backdrop)
+    paused: true,         // the menu is open: no AI moves and no analysis
     token: 0,             // changes with every position change; async work checks it
     epoch: 0,             // changes when the game is replaced (undo, restart): stops animations
     animating: false,
@@ -301,7 +304,8 @@ const isAITurn = () => !app.game.gameOver && app.players[currentSide()].type !==
 const aiSearchesNow = () => isAITurn() && app.players[currentSide()].type === 'mcts' && app.modelState === 'ready';
 const toAttackerView = (value) => (app.game.currentPlayer === ATTACKER_PLAYER ? value : -value);
 
-function newGame(rules, model) {
+/** Put the starting position of `rules` on the board, without starting anything. */
+function setUpBoard(rules) {
     app.epoch++;
     app.animating = false;
     removeFloatingPieces();
@@ -312,8 +316,13 @@ function newGame(rules, model) {
     app.history = [];
     app.lastMove = null;
     app.selected = -1;
-    document.title = rulesetTitle(app.rules);
     buildBoard();
+    render();
+}
+
+function newGame(rules, model) {
+    setUpBoard(rules);
+    document.title = rulesetTitle(app.rules);
     updatePlayerOptions();
     updateHelp();
     // A model that failed to load gets another try with every new game
@@ -348,6 +357,8 @@ function onPositionChanged() {
     }
     hideOverlay();
     resetEval();
+    // While the menu is open the game waits; closing the menu calls this again
+    if (app.paused) return;
     startAnalysis(token, aiSearchesNow());
     if (isAITurn()) {
         const bothAI = SIDES.every(s => app.players[s].type !== 'human');
@@ -698,7 +709,8 @@ const nextPaint = () => new Promise(resolve => setTimeout(resolve, 30));
  */
 function startAnalysis(token, aiSearches) {
     const g = app.game;
-    const wantNN = app.evalMode === 'nn' || app.policyMode === 'nn';
+    // One network call for the network's evaluation or suggestions, and for the outlook on the eval bar
+    const wantNN = app.evalMode !== 'off' || app.policyMode === 'nn';
     const wantMCTS = !aiSearches && (app.evalMode === 'nn-mcts' || app.policyMode === 'nn-mcts');
     if (app.evalMode === 'heuristic') {
         setTimeout(() => {
@@ -720,6 +732,7 @@ function startAnalysis(token, aiSearches) {
             app.analysis.nn = res.result;
             if (app.evalMode === 'nn') setEval(toAttackerView(res.result.value), 'network');
             if (app.policyMode === 'nn') renderSuggestions();
+            showOutlook();
         }).catch(error => console.error('[Analysis] Network evaluation failed:', error));
     }
     if (wantMCTS) {
@@ -744,7 +757,7 @@ function startAnalysis(token, aiSearches) {
 /** Restart the analysis after a display setting changed, without disturbing a thinking AI. */
 function refreshAnalysis() {
     updateEvalVisibility();
-    if (app.animating || app.game.gameOver) return;
+    if (app.paused || app.animating || app.game.gameOver) return;
     if (aiSearchesNow()) {
         if (app.evalMode === 'nn-mcts') {
             if (app.analysis.stats) showSearchStats(app.analysis.stats);
@@ -766,10 +779,11 @@ function refreshAnalysis() {
 function startAnalysisExtras() {
     const token = app.token;
     if (app.evalMode === 'heuristic') heuristicEval(token);
-    if (app.evalMode !== 'nn' && app.policyMode !== 'nn') return;
+    if (app.evalMode === 'off' && app.policyMode !== 'nn') return;
     const show = (result) => {
         if (app.evalMode === 'nn') setEval(toAttackerView(result.value), 'network');
         if (app.policyMode === 'nn') renderSuggestions();
+        showOutlook();
     };
     if (app.analysis.nn) {
         show(app.analysis.nn);
@@ -809,6 +823,53 @@ function updateEvalVisibility() {
 
 function resetEval() {
     setEval(null, '');
+    showOutlook();
+}
+
+// The network's outlook, shown when the pointer is on the eval bar (or after a tap on it): the
+// endings the network expects, most likely first, and the moves (plies) it expects the game to last
+const ENDING_TEXT = {
+    king_escaped: 'King escapes',
+    exit_fort: 'Exit fort',
+    attackers_blocked: "Attackers can't move",
+    king_captured: 'King captured',
+    encircled: 'Encirclement',
+    defenders_blocked: "Defenders can't move",
+    repetition: 'Repetition',
+};
+
+function endingText(ending) {
+    if (ending === 'move_limit') {
+        // Training stops games at max_game_length plies (a draw); the page does not
+        const limit = app.model && app.model.desc.max_game_length;
+        return limit ? `Over ${limit} moves` : 'A very long game';
+    }
+    return ENDING_TEXT[ending];
+}
+
+function showOutlook() {
+    const nn = app.analysis.nn;
+    const list = $('outlook-endings');
+    list.innerHTML = '';
+    let text;
+    if (app.game.gameOver) text = 'The game is over.';
+    else if (app.modelState !== 'ready') text = app.modelState === 'loading' ? 'Loading the model…' : 'No network for this board.';
+    else if (!nn || !nn.ending) text = 'Thinking…';
+    if (text) {
+        $('outlook-moves').textContent = text;
+        return;
+    }
+    const left = Math.max(1, Math.round(nn.movesLeft));
+    $('outlook-moves').innerHTML = '<span>Moves left</span><span></span>';
+    $('outlook-moves').children[1].textContent = `about ${left}`;
+    const endings = nn.ending.filter(e => e.p >= 0.005).sort((a, b) => b.p - a.p);
+    for (const { ending, p } of endings) {
+        const li = document.createElement('li');
+        li.innerHTML = '<span class="outlook-what"></span><span class="outlook-p"></span>';
+        li.children[0].textContent = endingText(ending);
+        li.children[1].textContent = `${Math.round(p * 100)} %`;
+        list.appendChild(li);
+    }
 }
 
 /** Show an evaluation from the attackers' side (+1 attackers win), or null for none. */
@@ -936,19 +997,20 @@ function setThinking(on) {
 function showGameOver() {
     const g = app.game;
     const winner = g.winner === null ? null : g.winner === ATTACKER_PLAYER ? 'Attackers' : 'Defenders';
-    const loser = g.winner === ATTACKER_PLAYER ? 'defenders' : 'attackers';
     const count = app.rules.repetition_count;
     const reason = {
-        escape: `The king escaped to ${app.rules.king_goal === 'corner' ? 'a corner' : 'the edge'}.`,
-        capture: 'The king was captured.',
+        king_escaped: `The king escaped to ${app.rules.king_goal === 'corner' ? 'a corner' : 'the edge'}.`,
+        king_captured: 'The king was captured.',
         exit_fort: 'The king is in an exit fort that cannot be broken.',
-        encirclement: 'The attackers have encircled every defender.',
+        encircled: 'The attackers have encircled every defender.',
         repetition: `The same position occurred for the ${ordinal(count)} time.`,
-        no_moves: `The ${loser} cannot move.`,
+        attackers_blocked: 'The attackers cannot move.',
+        defenders_blocked: 'The defenders cannot move.',
     }[g.endReason] || '';
     $('winMessage').innerHTML = `${winner ? `${winner} win!` : 'Draw!'}<small>${reason} Click to see the board.</small>`;
     $('overlay').classList.remove('hidden');
     setEval(g.winner === null ? 0 : g.winner === ATTACKER_PLAYER ? 1 : -1, 'game over');
+    showOutlook();
 }
 
 function hideOverlay() {
@@ -1025,27 +1087,41 @@ function fillModelSelect(select, size, selected) {
     select.value = selected && selected.size === size ? selected.id : models[0].id;
 }
 
+/**
+ * Offer in a player menu the AIs a board size allows (Minimax only on 7x7, NN + MCTS only with a
+ * model) and select `type` there, or the player that replaces it when the board does not allow it.
+ * Returns the selected type.
+ */
+function offerPlayerTypes(select, size, type) {
+    const hasModel = modelsForSize(size).length > 0 && client !== null;
+    const mcts = select.querySelector('option[value="mcts"]');
+    const minimax = select.querySelector('option[value="minimax"]');
+    mcts.disabled = !hasModel;
+    mcts.textContent = hasModel ? 'AI: NN + MCTS' : 'AI: NN + MCTS (no model)';
+    minimax.disabled = size !== 7;
+    minimax.textContent = size === 7 ? 'AI: Minimax' : 'AI: Minimax (7×7 only)';
+    if (type === 'minimax' && size !== 7) type = hasModel ? 'mcts' : 'human';
+    if (type === 'mcts' && !hasModel) type = 'human';
+    select.value = type;
+    return type;
+}
+
+/** The same for an eval bar menu: the heuristic evaluation exists for 7x7 only. */
+function offerEvalModes(select, size, mode) {
+    const heuristic = select.querySelector('option[value="heuristic"]');
+    heuristic.disabled = size !== 7;
+    heuristic.textContent = size === 7 ? 'Heuristics' : 'Heuristics (7×7 only)';
+    if (mode === 'heuristic' && size !== 7) mode = 'nn-mcts';
+    select.value = mode;
+    return mode;
+}
+
 function updatePlayerOptions() {
-    const hasModel = modelsForSize(app.size).length > 0 && client !== null;
     for (const side of SIDES) {
-        const select = $(`${side}-type`);
-        const config = app.players[side];
-        const mcts = select.querySelector('option[value="mcts"]');
-        const minimax = select.querySelector('option[value="minimax"]');
-        mcts.disabled = !hasModel;
-        mcts.textContent = hasModel ? 'AI: NN + MCTS' : 'AI: NN + MCTS (no model)';
-        minimax.disabled = app.size !== 7;
-        minimax.textContent = app.size === 7 ? 'AI: Minimax' : 'AI: Minimax (7×7 only)';
-        if (config.type === 'minimax' && app.size !== 7) config.type = hasModel ? 'mcts' : 'human';
-        if (config.type === 'mcts' && !hasModel) config.type = 'human';
-        select.value = config.type;
+        app.players[side].type = offerPlayerTypes($(`${side}-type`), app.size, app.players[side].type);
         updateDifficultyVisibility(side);
     }
-    const heuristic = $('eval-mode-select').querySelector('option[value="heuristic"]');
-    heuristic.disabled = app.size !== 7;
-    heuristic.textContent = app.size === 7 ? 'Heuristics' : 'Heuristics (7×7 only)';
-    if (app.evalMode === 'heuristic' && app.size !== 7) app.evalMode = 'nn-mcts';
-    $('eval-mode-select').value = app.evalMode;
+    app.evalMode = offerEvalModes($('eval-mode-select'), app.size, app.evalMode);
 }
 
 function updateDifficultyVisibility(side) {
@@ -1064,23 +1140,93 @@ function updateSearchControls() {
     $('discount-value').textContent = p.discount.toFixed(3);
 }
 
+// The help and settings panels; the main menu opens and closes on its own (openMenu, closeMenu)
+const PANELS = '.panel:not(#menuText)';
+
 function openPanel(id) {
-    for (const panel of document.querySelectorAll('.panel')) {
+    for (const panel of document.querySelectorAll(PANELS)) {
         panel.classList.toggle('hidden', panel.id !== id || !panel.classList.contains('hidden'));
     }
 }
 
 function closePanels() {
-    document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
+    document.querySelectorAll(PANELS).forEach(p => p.classList.add('hidden'));
 }
 
-// --- New game panel ---
+// --- Main menu: the set-up of the next game. The page opens here; while it is open, the game waits.
+// Nothing in it changes the game being played; "Start game" starts a new one with its choices.
 
 const newGameForm = {
     size: () => Number($('ng-variant').value),
     rules: () => RULESETS[$('ng-ruleset').value],
     model: () => findModel($('ng-model').value),
 };
+
+const menuIsOpen = () => !$('menuText').classList.contains('hidden');
+
+function openMenu() {
+    closePanels();
+    if (!app.paused) {
+        app.paused = true;
+        invalidate();  // stop the AI and the analysis
+    }
+    $('ng-variant').value = String(app.size);
+    fillRulesetSelect(app.size, app.rules);
+    fillModelSelect($('ng-model'), app.size, app.model || defaultModelFor(app.rules));
+    for (const side of SIDES) {
+        const p = app.players[side];
+        $(`ng-${side}-type`).value = p.type;
+        $(`ng-${side}-sims`).value = p.sims;
+        $(`ng-${side}-sims-value`).textContent = p.sims;
+        $(`ng-${side}-depth`).value = p.depth;
+        $(`ng-${side}-depth-value`).textContent = p.depth;
+    }
+    $('ng-eval-mode').value = app.evalMode;
+    $('ng-policy-mode').value = app.policyMode;
+    updateMenuOptions(app.size);
+    updateMenuNotes();
+    // Before the first game there is nothing to go back to
+    $('menu-close').classList.toggle('hidden', !app.started);
+    $('menu-back').classList.toggle('hidden', !app.started);
+    $('menuText').classList.toggle('over-game', app.started);
+    $('menuText').querySelector('.panel-content').classList.remove('pending');
+    $('menuText').classList.remove('hidden');
+}
+
+/** Back to the game, which goes on where it stopped. */
+function closeMenu() {
+    if (!app.started) return;
+    $('menuText').classList.add('hidden');
+    app.paused = false;
+    onPositionChanged();
+}
+
+/** The players and the eval bar the menu offers for a board size; keeps what is chosen where it can. */
+function updateMenuOptions(size) {
+    for (const side of SIDES) {
+        const type = offerPlayerTypes($(`ng-${side}-type`), size, $(`ng-${side}-type`).value);
+        $(`ng-${side}-mcts`).classList.toggle('hidden', type !== 'mcts');
+        $(`ng-${side}-minimax`).classList.toggle('hidden', type !== 'minimax');
+    }
+    offerEvalModes($('ng-eval-mode'), size, $('ng-eval-mode').value);
+}
+
+function startGameFromMenu() {
+    for (const side of SIDES) {
+        Object.assign(app.players[side], {
+            type: $(`ng-${side}-type`).value,
+            sims: Number($(`ng-${side}-sims`).value),
+            depth: Number($(`ng-${side}-depth`).value),
+        });
+    }
+    app.evalMode = $('ng-eval-mode').value;
+    app.policyMode = $('ng-policy-mode').value;
+    showPlayOptions();
+    $('menuText').classList.add('hidden');
+    app.started = true;
+    app.paused = false;
+    newGame(newGameForm.rules(), newGameForm.model());
+}
 
 function fillRulesetSelect(size, selected) {
     const select = $('ng-ruleset');
@@ -1095,22 +1241,20 @@ function fillRulesetSelect(size, selected) {
     select.value = selected && selected.board_size === size ? selected.name : DEFAULT_RULESETS[size];
 }
 
-function openNewGamePanel() {
-    $('ng-variant').value = String(app.size);
-    fillRulesetSelect(app.size, app.rules);
-    fillModelSelect($('ng-model'), app.size, app.model);
-    updateNewGamePanel();
-    openPanel('newGameText');
-}
-
-function updateNewGamePanel() {
+function updateMenuNotes() {
     const rules = newGameForm.rules();
     const model = newGameForm.model();
     const info = RULESET_INFO[rules.name];
     $('ng-ruleset-note').textContent = `${rules.description}: ${rulesSummary(rules)}.` +
         (info ? ` Defenders win ${info.defenders} human games.` : '');
-    $('ng-model-note').textContent = modelNote(model);
+    // Short, so the menu fits on a phone: the network and its search settings are in the Settings
+    // panel. The line above the board, which tells of the errors, is behind the menu.
     const diffs = model ? rulesDifferences(rules, model.rules) : [];
+    const note = model && model.note ? model.note : '';
+    $('ng-model-note').textContent = !client ? 'The AI cannot run here: the search worker could not start (open the page through a web server).'
+        : app.manifestError ? `The list of AI models could not be loaded (${app.manifestError}).`
+        : !model ? modelNote(null)
+        : diffs.length ? note : `Trained with these rules. ${note}`;
     const warning = $('ng-warning');
     warning.classList.toggle('hidden', diffs.length === 0);
     warning.textContent = diffs.length
@@ -1170,7 +1314,16 @@ function applyPrefs(prefs) {
     if (Number.isFinite(prefs.analysisSims)) app.analysisSims = prefs.analysisSims;
     app.continuous = Boolean(prefs.continuous);
     if (prefs.modelBySize && typeof prefs.modelBySize === 'object') app.modelBySize = { ...prefs.modelBySize };
+    showPlayOptions();
+    $('temperature-slider').value = app.temperature;
+    $('temperature-value').textContent = app.temperature.toFixed(2);
+    $('mcts-simulations-slider').value = app.analysisSims;
+    $('mcts-simulations-value').textContent = app.analysisSims;
+    $('continuous-eval-toggle').checked = app.continuous;
+}
 
+/** Show the players, their strength, the eval bar and the suggestions in the menus below the board. */
+function showPlayOptions() {
     for (const side of SIDES) {
         const p = app.players[side];
         $(`${side}-type`).value = p.type;
@@ -1178,14 +1331,10 @@ function applyPrefs(prefs) {
         $(`${side}-mcts-value`).textContent = p.sims;
         $(`${side}-minimax-difficulty`).value = p.depth;
         $(`${side}-minimax-value`).textContent = p.depth;
+        updateDifficultyVisibility(side);
     }
     $('eval-mode-select').value = app.evalMode;
     $('policy-mode-select').value = app.policyMode;
-    $('temperature-slider').value = app.temperature;
-    $('temperature-value').textContent = app.temperature.toFixed(2);
-    $('mcts-simulations-slider').value = app.analysisSims;
-    $('mcts-simulations-value').textContent = app.analysisSims;
-    $('continuous-eval-toggle').checked = app.continuous;
 }
 
 // ----------------------------------------------------------------------------------------------
@@ -1236,36 +1385,51 @@ function bindEvents() {
 
     $('undo-btn').addEventListener('click', undo);
     $('restart-btn').addEventListener('click', () => newGame(app.rules, app.model));
-    $('new-game-btn').addEventListener('click', openNewGamePanel);
+    $('menu-btn').addEventListener('click', openMenu);
     $('help-btn').addEventListener('click', () => openPanel('helpText'));
     $('settings-btn').addEventListener('click', () => openPanel('settingsText'));
     document.querySelectorAll('[data-close]').forEach(el => {
         el.addEventListener('click', () => $(el.dataset.close).classList.add('hidden'));
     });
     document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape') closePanels();
+        if (event.key !== 'Escape') return;
+        if (menuIsOpen()) closeMenu();
+        else closePanels();
     });
     $('overlay').addEventListener('click', hideOverlay);
+    // The outlook shows on hover; a tap (on touch screens) shows it until the next tap elsewhere
+    $('AI-eval').addEventListener('click', () => $('AI-eval').classList.toggle('show-outlook'));
+    document.addEventListener('pointerdown', (event) => {
+        if (!event.target.closest('#AI-eval')) $('AI-eval').classList.remove('show-outlook');
+    });
 
-    // New game panel
+    // Main menu
     $('ng-variant').addEventListener('change', () => {
         const size = newGameForm.size();
         fillRulesetSelect(size, null);
         fillModelSelect($('ng-model'), size, defaultModelFor(newGameForm.rules()));
-        updateNewGamePanel();
+        updateMenuOptions(size);
+        updateMenuNotes();
     });
     $('ng-ruleset').addEventListener('change', () => {
         // Switch to a model trained with these rules if there is one; else keep the chosen model
         const rules = newGameForm.rules();
         const model = defaultModelFor(rules);
         if (model && Tafl.rulesEqual(model.rules, rules)) $('ng-model').value = model.id;
-        updateNewGamePanel();
+        updateMenuNotes();
     });
-    $('ng-model').addEventListener('change', updateNewGamePanel);
-    $('ng-start').addEventListener('click', () => {
-        closePanels();
-        newGame(newGameForm.rules(), newGameForm.model());
-    });
+    $('ng-model').addEventListener('change', updateMenuNotes);
+    for (const side of SIDES) {
+        $(`ng-${side}-type`).addEventListener('change', () => updateMenuOptions(newGameForm.size()));
+        for (const what of ['sims', 'depth']) {
+            $(`ng-${side}-${what}`).addEventListener('input', (event) => {
+                $(`ng-${side}-${what}-value`).textContent = event.target.value;
+            });
+        }
+    }
+    $('ng-start').addEventListener('click', startGameFromMenu);
+    $('menu-back').addEventListener('click', closeMenu);
+    $('menu-close').addEventListener('click', closeMenu);
 
     // Settings panel
     $('model-select').addEventListener('change', (event) => {
@@ -1325,10 +1489,12 @@ async function init() {
         await loadManifest();
     } catch (error) {
         console.error('[Models]', error);
+        app.manifestError = error.message;
         showStatus(`Could not load the model list: ${error.message}`, true, 0);
     }
-    const rules = RULESETS[prefs.ruleset] || RULESETS[DEFAULT_RULESETS[7]];
-    newGame(rules, defaultModelFor(rules));
+    // The page opens at the menu, set to the rules of the last game; the board behind shows them
+    setUpBoard(RULESETS[prefs.ruleset] || RULESETS[DEFAULT_RULESETS[7]]);
+    openMenu();
 }
 
 init();
