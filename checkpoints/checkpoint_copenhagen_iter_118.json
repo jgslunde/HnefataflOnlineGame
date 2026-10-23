@@ -1,0 +1,109 @@
+{
+  "board_size": 11,
+  "input": {
+    "shape": [
+      1,
+      4,
+      11,
+      11
+    ],
+    "planes": [
+      "attackers_t0",
+      "defenders_t0",
+      "king_t0",
+      "player"
+    ],
+    "description": "See features.py: piece planes of the last history_length positions (newest first, zero planes before the start of the game), the player plane (0 attackers, 1 defenders), then the optional constant, reach and defender-region planes. All values are 0 or 1."
+  },
+  "policy": {
+    "size": 4840,
+    "index": "from_square * 4 * (N-1) + direction * (N-1) + (distance - 1), with from_square = row * N + col and directions 0 up, 1 down, 2 left, 3 right",
+    "note": "logits; take the softmax over the legal moves only"
+  },
+  "value": "tanh output in [-1, 1] for the player to move",
+  "ending": {
+    "classes": [
+      "king_escaped",
+      "exit_fort",
+      "attackers_blocked",
+      "king_captured",
+      "encircled",
+      "defenders_blocked",
+      "repetition",
+      "move_limit"
+    ],
+    "note": "logits of how the game will end; take the softmax over the endings the rules allow (exit_fort and encircled only where those rules are on)"
+  },
+  "moves_left": "the expected number of plies until the game ends",
+  "network": {
+    "channels": 64,
+    "blocks": [
+      "res",
+      "res",
+      "res",
+      "res",
+      "res",
+      "res",
+      "res",
+      "res"
+    ],
+    "bottleneck": 0.5,
+    "squeeze_excitation": false,
+    "global_pool": "none",
+    "global_pool_channels": 16,
+    "tie_blocks": false,
+    "attention_heads": 4,
+    "policy_head": "dense",
+    "policy_dense_channels": 2,
+    "policy_bilinear_dim": 32,
+    "value_head": "dense",
+    "value_hidden": 128,
+    "value_pool_channels": 16,
+    "features": {
+      "history_length": 1,
+      "constant_planes": false,
+      "mobility_planes": false,
+      "region_plane": false
+    }
+  },
+  "network_description": "8x64 res, dense policy, dense value, 4 planes, 1,793,288 parameters",
+  "num_parameters": 1793288,
+  "ruleset": "copenhagen",
+  "rules": {
+    "name": "copenhagen",
+    "description": "Copenhagen Hnefatafl 11x11 (World Tafl Federation, 2012), the most played 11x11 rules",
+    "setup": [
+      "...AAAAA...",
+      ".....A.....",
+      "...........",
+      "A....D....A",
+      "A...DDD...A",
+      "AA.DDKDD.AA",
+      "A...DDD...A",
+      "A....D....A",
+      "...........",
+      ".....A.....",
+      "...AAAAA..."
+    ],
+    "first_player": "attackers",
+    "king_goal": "corner",
+    "king_capture": "strong",
+    "king_armed": true,
+    "throne": true,
+    "throne_hostile": true,
+    "encirclement": true,
+    "shieldwall": true,
+    "exit_fort": true,
+    "repetition": "defenders_lose",
+    "throne_passable": true,
+    "repetition_count": 3
+  },
+  "max_game_length": 300,
+  "search": {
+    "c_puct": 1.5,
+    "fpu_reduction": -0.25,
+    "discount": 0.995
+  },
+  "run_name": "copenhagen baseline: 8x64 res blocks with the old dense heads, 4 planes (the reference for the line networks)",
+  "iteration": 118
+}
