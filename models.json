@@ -3,9 +3,16 @@
   "defaults": {
     "brandubh": "brandubh_baseline_25",
     "sami_tablut": "sami_tablut_baseline_8",
-    "copenhagen": "copenhagen_baseline_5"
+    "copenhagen": "copenhagen_baseline_118"
   },
   "models": [
+    {
+      "id": "copenhagen_baseline_118",
+      "name": "ResNet 8x64 · baseline · it. 118",
+      "onnx": "checkpoints/checkpoint_copenhagen_iter_118.onnx",
+      "info": "checkpoints/checkpoint_copenhagen_iter_118.json",
+      "note": "Iteration 118 of the Copenhagen baseline run."
+    },
     {
       "id": "brandubh_baseline_25",
       "name": "ResNet 6x32 SE · baseline · it. 25",

@@ -88,8 +88,13 @@ body {
     width: 0.4vh;
     height: 100%;
     background-color: #ff0000;
-    transition: left 0.3s ease;
+    transition: left 0.3s ease, opacity 0.3s ease;
     border-radius: 0.2vh;
+}
+
+/* The last evaluation, while the search for the new position has not reported yet */
+#eval-bar.stale {
+    opacity: 0.4;
 }
 
 #eval-detail {

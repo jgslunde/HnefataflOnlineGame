@@ -318,6 +318,7 @@ function setUpBoard(rules) {
     app.selected = -1;
     buildBoard();
     render();
+    centerEval();
 }
 
 function newGame(rules, model) {
@@ -872,20 +873,29 @@ function showOutlook() {
     }
 }
 
-/** Show an evaluation from the attackers' side (+1 attackers win), or null for none. */
+/**
+ * Show an evaluation from the attackers' side (+1 attackers win), or null for none. Without a value
+ * the bar stays where the last one put it, dimmed, so a new search moves it on from there.
+ */
 function setEval(value, detail) {
     updateEvalVisibility();
     const valueEl = $('eval-value');
     const bar = $('eval-bar');
-    if (value === null || value === undefined || Number.isNaN(value)) {
+    const missing = value === null || value === undefined || Number.isNaN(value);
+    bar.classList.toggle('stale', missing);
+    if (missing) {
         valueEl.textContent = '–';
-        bar.style.left = '50%';
     } else {
         // The heuristics use a wider scale than the network's [-1, 1]
         valueEl.textContent = value > 5 ? 'attackers winning' : value < -5 ? 'defenders winning' : value.toFixed(2);
         bar.style.left = `${((Math.max(-1, Math.min(1, value)) + 1) / 2) * 100}%`;
     }
     $('eval-detail').textContent = detail || '';
+}
+
+/** Put the eval bar back in the middle: for a new game, or an evaluation on another scale. */
+function centerEval() {
+    $('eval-bar').style.left = '50%';
 }
 
 function clearSuggestions() {
@@ -1374,6 +1384,7 @@ function bindEvents() {
         app.evalMode = event.target.value;
         savePrefs();
         resetEval();
+        centerEval();
         refreshAnalysis();
     });
     $('policy-mode-select').addEventListener('change', (event) => {
