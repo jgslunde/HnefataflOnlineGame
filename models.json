@@ -21,11 +21,11 @@
       "note": "Iteration 118 of the Copenhagen baseline run."
     },
     {
-      "id": "sami_tablut_baseline_8",
-      "name": "ResNet 6x48 · baseline · it. 8",
-      "onnx": "checkpoints/sami_tablut_baseline_iter_8.onnx",
-      "info": "checkpoints/sami_tablut_baseline_iter_8.json",
-      "note": "Early in training (iteration 8)."
+      "id": "sami_tablut_baseline_600",
+      "name": "ResNet 6x48 · baseline · it. 600",
+      "onnx": "checkpoints/sami_tablut_baseline_iter_600.onnx",
+      "info": "checkpoints/sami_tablut_baseline_iter_600.json",
+      "note": "Early in training (iteration 600)."
     },
     {
       "id": "copenhagen_baseline_5",

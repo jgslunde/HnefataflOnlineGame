@@ -1,0 +1,105 @@
+{
+  "board_size": 9,
+  "input": {
+    "shape": [
+      1,
+      4,
+      9,
+      9
+    ],
+    "planes": [
+      "attackers_t0",
+      "defenders_t0",
+      "king_t0",
+      "player"
+    ],
+    "description": "See features.py: piece planes of the last history_length positions (newest first, zero planes before the start of the game), the player plane (0 attackers, 1 defenders), then the optional constant, reach and defender-region planes. All values are 0 or 1."
+  },
+  "policy": {
+    "size": 2592,
+    "index": "from_square * 4 * (N-1) + direction * (N-1) + (distance - 1), with from_square = row * N + col and directions 0 up, 1 down, 2 left, 3 right",
+    "note": "logits; take the softmax over the legal moves only"
+  },
+  "value": "tanh output in [-1, 1] for the player to move",
+  "ending": {
+    "classes": [
+      "king_escaped",
+      "exit_fort",
+      "attackers_blocked",
+      "king_captured",
+      "encircled",
+      "defenders_blocked",
+      "repetition",
+      "move_limit"
+    ],
+    "note": "logits of how the game will end; take the softmax over the endings the rules allow (exit_fort and encircled only where those rules are on)"
+  },
+  "moves_left": "the expected number of plies until the game ends",
+  "network": {
+    "channels": 48,
+    "blocks": [
+      "res",
+      "res",
+      "res",
+      "res",
+      "res",
+      "res"
+    ],
+    "bottleneck": 0.5,
+    "squeeze_excitation": false,
+    "global_pool": "none",
+    "global_pool_channels": 16,
+    "tie_blocks": false,
+    "attention_heads": 4,
+    "policy_head": "dense",
+    "policy_dense_channels": 2,
+    "policy_bilinear_dim": 32,
+    "value_head": "dense",
+    "value_hidden": 128,
+    "value_pool_channels": 16,
+    "features": {
+      "history_length": 1,
+      "constant_planes": false,
+      "mobility_planes": false,
+      "region_plane": false
+    }
+  },
+  "network_description": "6x48 res, dense policy, dense value, 4 planes, 691,488 parameters",
+  "num_parameters": 691488,
+  "ruleset": "sami_tablut",
+  "rules": {
+    "name": "sami_tablut",
+    "description": "Sami Tablut 9x9 as in the WTF championship (Saami Tablut-w, defenders first)",
+    "setup": [
+      "...AAA...",
+      "....A....",
+      "....D....",
+      "A...D...A",
+      "AADDKDDAA",
+      "A...D...A",
+      "....D....",
+      "....A....",
+      "...AAA..."
+    ],
+    "first_player": "defenders",
+    "king_goal": "edge",
+    "king_capture": "weak_near_throne",
+    "king_armed": true,
+    "throne": true,
+    "throne_hostile": true,
+    "encirclement": true,
+    "shieldwall": false,
+    "exit_fort": false,
+    "repetition": "defenders_lose",
+    "throne_passable": true,
+    "repetition_count": 3
+  },
+  "max_game_length": 200,
+  "search": {
+    "c_puct": 1.5,
+    "fpu_reduction": -0.25,
+    "discount": 0.99
+  },
+  "run_name": "sami_tablut baseline: 6x48 plain blocks, dense heads (the old train_tablut.py defaults)",
+  "iteration": 600
+}
