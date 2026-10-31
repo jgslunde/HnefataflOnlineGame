@@ -3,7 +3,7 @@
   "input": {
     "shape": [
       1,
-      4,
+      10,
       7,
       7
     ],
@@ -11,7 +11,13 @@
       "attackers_t0",
       "defenders_t0",
       "king_t0",
-      "player"
+      "player",
+      "ones",
+      "corners",
+      "throne",
+      "reach_attackers",
+      "reach_defenders",
+      "reach_king"
     ],
     "description": "See features.py: piece planes of the last history_length positions (newest first, zero planes before the start of the game), the player plane (0 attackers, 1 defenders), then the optional constant, reach and defender-region planes. All values are 0 or 1."
   },
@@ -38,38 +44,36 @@
   "network": {
     "channels": 32,
     "blocks": [
-      "res",
-      "res",
-      "res",
-      "res",
-      "res",
-      "res"
+      "line",
+      "line",
+      "line",
+      "line"
     ],
     "bottleneck": 0.5,
-    "squeeze_excitation": true,
+    "squeeze_excitation": false,
     "global_pool": "none",
     "global_pool_channels": 16,
     "tie_blocks": false,
     "attention_heads": 4,
-    "policy_head": "dense",
+    "policy_head": "conv",
     "policy_dense_channels": 2,
     "policy_bilinear_dim": 32,
-    "value_head": "dense",
-    "value_hidden": 256,
+    "value_head": "pooled",
+    "value_hidden": 64,
     "value_pool_channels": 16,
     "features": {
       "history_length": 1,
-      "constant_planes": false,
-      "mobility_planes": false,
+      "constant_planes": true,
+      "mobility_planes": true,
       "region_plane": false
     }
   },
-  "network_description": "6x32 res SE, dense policy, dense value, 4 planes, 249,808 parameters",
-  "num_parameters": 249808,
-  "ruleset": "brandubh",
+  "network_description": "4x32 line, conv policy, pooled value, 10 planes, 46,756 parameters",
+  "num_parameters": 46756,
+  "ruleset": "brandubh_2_5w",
   "rules": {
-    "name": "brandubh",
-    "description": "Brandubh 2 (World Tafl Federation, 2020), the most played 7x7 rules",
+    "name": "brandubh_2_5w",
+    "description": "Brandubh 2.5W 7x7 (draft of February 2026)",
     "setup": [
       "...A...",
       "...A...",
@@ -79,7 +83,7 @@
       "...A...",
       "...A..."
     ],
-    "first_player": "attackers",
+    "first_player": "defenders",
     "king_goal": "corner",
     "king_capture": "weak_throne",
     "king_armed": true,
@@ -89,8 +93,8 @@
     "shieldwall": false,
     "exit_fort": false,
     "repetition": "defenders_lose",
-    "throne_passable": true,
-    "repetition_count": 3
+    "throne_passable": false,
+    "repetition_count": 5
   },
   "max_game_length": 100,
   "search": {
@@ -98,6 +102,6 @@
     "fpu_reduction": -0.25,
     "discount": 0.98
   },
-  "run_name": "brandubh baseline: 6x32 SE blocks, dense heads (the old train_brandubh.py defaults)",
-  "iteration": 400
+  "run_name": "brandubh_2_5w: 4 line blocks x 32 + reach planes from the move generator",
+  "iteration": 200
 }

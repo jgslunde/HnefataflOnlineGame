@@ -1,11 +1,11 @@
 {
-  "board_size": 11,
+  "board_size": 7,
   "input": {
     "shape": [
       1,
       4,
-      11,
-      11
+      7,
+      7
     ],
     "planes": [
       "attackers_t0",
@@ -16,7 +16,7 @@
     "description": "See features.py: piece planes of the last history_length positions (newest first, zero planes before the start of the game), the player plane (0 attackers, 1 defenders), then the optional constant, reach and defender-region planes. All values are 0 or 1."
   },
   "policy": {
-    "size": 4840,
+    "size": 1176,
     "index": "from_square * 4 * (N-1) + direction * (N-1) + (distance - 1), with from_square = row * N + col and directions 0 up, 1 down, 2 left, 3 right",
     "note": "logits; take the softmax over the legal moves only"
   },
@@ -36,10 +36,8 @@
   },
   "moves_left": "the expected number of plies until the game ends",
   "network": {
-    "channels": 64,
+    "channels": 32,
     "blocks": [
-      "res",
-      "res",
       "res",
       "res",
       "res",
@@ -48,7 +46,7 @@
       "res"
     ],
     "bottleneck": 0.5,
-    "squeeze_excitation": false,
+    "squeeze_excitation": true,
     "global_pool": "none",
     "global_pool_channels": 16,
     "tie_blocks": false,
@@ -57,7 +55,7 @@
     "policy_dense_channels": 2,
     "policy_bilinear_dim": 32,
     "value_head": "dense",
-    "value_hidden": 128,
+    "value_hidden": 256,
     "value_pool_channels": 16,
     "features": {
       "history_length": 1,
@@ -66,44 +64,40 @@
       "region_plane": false
     }
   },
-  "network_description": "8x64 res, dense policy, dense value, 4 planes, 1,793,288 parameters",
-  "num_parameters": 1793288,
-  "ruleset": "copenhagen",
+  "network_description": "6x32 res SE, dense policy, dense value, 4 planes, 249,808 parameters",
+  "num_parameters": 249808,
+  "ruleset": "brandubh_2",
   "rules": {
-    "name": "copenhagen",
-    "description": "Copenhagen Hnefatafl 11x11 (World Tafl Federation, 2012), the most played 11x11 rules",
+    "name": "brandubh_2",
+    "description": "Brandubh 2 (World Tafl Federation, 2020), the most played 7x7 rules",
     "setup": [
-      "...AAAAA...",
-      ".....A.....",
-      "...........",
-      "A....D....A",
-      "A...DDD...A",
-      "AA.DDKDD.AA",
-      "A...DDD...A",
-      "A....D....A",
-      "...........",
-      ".....A.....",
-      "...AAAAA..."
+      "...A...",
+      "...A...",
+      "...D...",
+      "AADKDAA",
+      "...D...",
+      "...A...",
+      "...A..."
     ],
     "first_player": "attackers",
     "king_goal": "corner",
-    "king_capture": "strong",
+    "king_capture": "weak_throne",
     "king_armed": true,
     "throne": true,
     "throne_hostile": true,
     "encirclement": true,
-    "shieldwall": true,
-    "exit_fort": true,
+    "shieldwall": false,
+    "exit_fort": false,
     "repetition": "defenders_lose",
     "throne_passable": true,
     "repetition_count": 3
   },
-  "max_game_length": 300,
+  "max_game_length": 100,
   "search": {
     "c_puct": 1.5,
     "fpu_reduction": -0.25,
-    "discount": 0.995
+    "discount": 0.98
   },
-  "run_name": "copenhagen baseline: 8x64 res blocks with the old dense heads, 4 planes (the reference for the line networks)",
-  "iteration": 118
+  "run_name": "brandubh_2 baseline: 6x32 SE blocks, dense heads (the old train_brandubh.py defaults)",
+  "iteration": 400
 }

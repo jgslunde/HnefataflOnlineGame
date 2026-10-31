@@ -7,7 +7,7 @@ script records, for every move: the position before it (board, player to move, e
 all legal moves in engine order, all input planes (history of 3 positions, constant, reach and
 defender-region planes), the move, and the position and result after it. Two sources:
 
-- games under each of the eleven named rule sets, from the start, with random moves biased towards
+- games under each of the twelve named rule sets, from the start, with random moves biased towards
   what random play rarely reaches: captures, king moves, attackers next to the king, moves along the
   edge (shieldwalls), and replaying one's own previous move backwards (repetitions);
 - every move made by the hand-made rule positions of test_rules.py in the training code, one
@@ -17,7 +17,7 @@ defender-region planes), the move, and the position and result after it. Two sou
   (a king on the edge among many defenders) and captures, shieldwalls among them.
 
 Usage (needs the training code's Python environment, with scipy):
-    python tests/make_reference_games.py /path/to/Hnefatafl_RL [--out tests/reference] [--seed 0]
+    python tests/make_reference_games.py /path/to/Tafl_RL [--out tests/reference] [--seed 0]
 Then run:  node tests/test_engine.js
 """
 
@@ -34,7 +34,7 @@ import numpy as np
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('training_dir', help='Path of the Hnefatafl_RL folder of the training code')
+    parser.add_argument('training_dir', help='Path of the training code (Tafl_RL)')
     parser.add_argument('--out', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'reference'))
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--games', type=int, default=24, help='Games per rule set (default: 24)')

@@ -9,7 +9,7 @@ on the same positions with onnxruntime-web should give the same counts. So are t
 ending probabilities (a softmax over the endings the rules allow) and plies left at the root.
 
 Usage (needs the training code's Python environment, with scipy and onnxruntime):
-    python tests/make_mcts_reference.py /path/to/Hnefatafl_RL [--sims 200] [--out tests/reference/mcts.json]
+    python tests/make_mcts_reference.py /path/to/Tafl_RL [--sims 200] [--out tests/reference/mcts.json]
 """
 
 import argparse
@@ -27,9 +27,12 @@ parser.add_argument('training_dir')
 parser.add_argument('--sims', type=int, default=200)
 parser.add_argument('--out', default=os.path.join(HERE, 'reference', 'mcts.json'))
 parser.add_argument('--models', nargs='*', default=[
-    'checkpoints/brandubh_baseline_iter_25',
-    'checkpoints/sami_tablut_baseline_iter_8',
-    'checkpoints/copenhagen_baseline_iter_5',
+    'checkpoints/brandubh_2_baseline_iter_400',
+    'checkpoints/brandubh_2_line_4x32_mobility_iter_500',
+    'checkpoints/brandubh_2_5w_line_4x32_mobility_iter_200',
+    'checkpoints/sami_tablut_baseline_iter_600',
+    'checkpoints/copenhagen_baseline_iter_400',
+    'checkpoints/copenhagen_line_10x64_gpool_iter_250',
 ])
 args = parser.parse_args()
 sys.path.insert(0, os.path.abspath(args.training_dir))

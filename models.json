@@ -1,24 +1,32 @@
 {
   "about": "The network models the page offers. Each entry names an .onnx file and its description (.json, as written by convert_to_onnx.py in the training code); board size, input planes, the rule set it was trained with and its search settings are read from the description. 'defaults' picks the model a new game of each rule set starts with; other rule sets of the same board size use the first model of that size.",
   "defaults": {
-    "brandubh": "brandubh_baseline_400",
-    "sami_tablut": "sami_tablut_baseline_8",
-    "copenhagen": "copenhagen_baseline_118"
+    "brandubh_2": "brandubh_2_baseline_400",
+    "brandubh_2_5w": "brandubh_2_5w_line_200",
+    "sami_tablut": "sami_tablut_baseline_600",
+    "copenhagen": "copenhagen_baseline_400"
   },
   "models": [
     {
-      "id": "brandubh_baseline_400",
+      "id": "brandubh_2_baseline_400",
       "name": "ResNet 6x32 SE · baseline · it. 400",
-      "onnx": "checkpoints/brandubh_baseline_iter_400.onnx",
-      "info": "checkpoints/brandubh_baseline_iter_400.json",
-      "note": "Iteration 400 of the Brandubh baseline run."
+      "onnx": "checkpoints/brandubh_2_baseline_iter_400.onnx",
+      "info": "checkpoints/brandubh_2_baseline_iter_400.json",
+      "note": "Iteration 400 of the Brandubh 2 baseline run."
     },
     {
-      "id": "copenhagen_baseline_118",
-      "name": "ResNet 8x64 · baseline · it. 118",
-      "onnx": "checkpoints/checkpoint_copenhagen_iter_118.onnx",
-      "info": "checkpoints/checkpoint_copenhagen_iter_118.json",
-      "note": "Iteration 118 of the Copenhagen baseline run."
+      "id": "brandubh_2_line_500",
+      "name": "Line 4x32 · mobility planes · it. 500",
+      "onnx": "checkpoints/brandubh_2_line_4x32_mobility_iter_500.onnx",
+      "info": "checkpoints/brandubh_2_line_4x32_mobility_iter_500.json",
+      "note": "Iteration 500 of the Brandubh 2 line network run."
+    },
+    {
+      "id": "brandubh_2_5w_line_200",
+      "name": "Line 4x32 · mobility planes · it. 200",
+      "onnx": "checkpoints/brandubh_2_5w_line_4x32_mobility_iter_200.onnx",
+      "info": "checkpoints/brandubh_2_5w_line_4x32_mobility_iter_200.json",
+      "note": "Iteration 200 of the Brandubh 2.5W line network run."
     },
     {
       "id": "sami_tablut_baseline_600",
@@ -28,11 +36,18 @@
       "note": "Early in training (iteration 600)."
     },
     {
-      "id": "copenhagen_baseline_5",
-      "name": "ResNet 8x64 · baseline · it. 5",
-      "onnx": "checkpoints/copenhagen_baseline_iter_5.onnx",
-      "info": "checkpoints/copenhagen_baseline_iter_5.json",
-      "note": "Very early in training (iteration 5)."
+      "id": "copenhagen_baseline_400",
+      "name": "ResNet 8x64 · baseline · it. 400",
+      "onnx": "checkpoints/copenhagen_baseline_iter_400.onnx",
+      "info": "checkpoints/copenhagen_baseline_iter_400.json",
+      "note": "Iteration 400 of the Copenhagen baseline run."
+    },
+    {
+      "id": "copenhagen_line_gpool_250",
+      "name": "Line 10x64 · global pool · it. 250",
+      "onnx": "checkpoints/copenhagen_line_10x64_gpool_iter_250.onnx",
+      "info": "checkpoints/copenhagen_line_10x64_gpool_iter_250.json",
+      "note": "Iteration 250 of the Copenhagen line network run."
     }
   ]
 }

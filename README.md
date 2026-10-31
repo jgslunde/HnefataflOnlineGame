@@ -1,8 +1,9 @@
 # HnefataflOnlineGame
 
-Tafl in the browser under the eleven named rule sets of the training code (Brandubh 2,
-Copenhagen, Fetlar, Sami Tablut, Sea Battle, ... on 7×7, 9×9 and 11×11 boards), against AIs trained
-with reinforcement learning in [jgslunde/Games](https://github.com/jgslunde/Games) (`Hnefatafl_RL/`).
+Tafl in the browser under the twelve named rule sets of the training code (Brandubh 2,
+Copenhagen, Fetlar, Sami Tablut, Sea Battle, ... on 7×7, 9×9 and 11×11 boards) and the 2026 version
+of Sami Tablut, against AIs trained with reinforcement learning in
+[jgslunde/Tafl_RL](https://github.com/jgslunde/Tafl_RL).
 A static site: open `index.html` through any web server (`python3 serve.py`, then
 http://localhost:8000). It does not work from `file://`, because it uses a Web Worker.
 
@@ -20,6 +21,9 @@ http://localhost:8000). It does not work from `file://`, because it uses a Web W
 
 A network only knows the game as the Python engine plays it, so the rules, input planes and
 search settings must match the training code exactly. Where they differ, the Python code is right.
+The one exception for now is `sami_tablut_2026`, which is not in `tafl.py` yet: no network has
+trained on it, and `tests/reference/reference_sami_tablut_2026.json.gz` comes from a patched copy of
+the Python engine, so regenerate it once the rule set is in the training code.
 
 ## Adding a model
 
@@ -29,10 +33,10 @@ search settings must match the training code exactly. Where they differ, the Pyt
    (`ruleset`, and all its fields in `rules`) and its search settings.
    If only the `.onnx` file and its run's `run_config.json` are at hand, `tools/describe_model.py`
    copies the model here and writes the same description with the exporter's own function:
-   `python tools/describe_model.py /path/to/Hnefatafl_RL <run dir>/checkpoint_iter_N.onnx checkpoints/<name>.onnx`.
+   `python tools/describe_model.py /path/to/Tafl_RL <run dir>/checkpoint_iter_N.onnx checkpoints/<name>.onnx`.
 2. Add an entry to `models.json` with an `id`, a display `name`, the `onnx` and `info` paths and an
    optional `note`. To make it the default for its rule set, put its id under `defaults`, keyed by
-   the rule set name (for example `"brandubh"`).
+   the rule set name (for example `"brandubh_2"`).
 
 The board size, input planes, training rules and search settings all come from the `.json` file.
 Deprecated models are skipped: those trained before the named rule sets (descriptions without a
@@ -46,11 +50,11 @@ The tests compare the JavaScript with the Python training code, so they need it 
 environment, with `scipy` and `onnxruntime`) to write reference data:
 
 ```
-python tests/make_reference_games.py /path/to/Hnefatafl_RL   # games under every rule set, the
-                                                              # positions of test_rules.py, fuzzed
-                                                              # exit forts and shieldwalls
-python tests/make_mcts_reference.py /path/to/Hnefatafl_RL    # searches with the bundled models
-cd tests && npm install && cd ..                              # onnxruntime-web for Node
+python tests/make_reference_games.py /path/to/Tafl_RL   # games under every rule set, the
+                                                          # positions of test_rules.py, fuzzed
+                                                          # exit forts and shieldwalls
+python tests/make_mcts_reference.py /path/to/Tafl_RL    # searches with the bundled models
+cd tests && npm install && cd ..                          # onnxruntime-web for Node
 node tests/test_engine.js   # boards, legal moves, input planes and results, move by move
 node tests/test_mcts.js     # visit counts of the JS search against the Python search
 node tests/test_page.js     # the page in headless Chrome (needs Chrome and internet access)

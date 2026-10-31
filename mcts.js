@@ -1,7 +1,7 @@
 /**
  * Monte Carlo tree search guided by a policy/value network (AlphaZero style).
  *
- * A port of mcts.py from the training code (github.com/jgslunde/Games, Hnefatafl_RL/), with its
+ * A port of mcts.py from the training code (github.com/jgslunde/Tafl_RL), with its
  * October 2026 fixes:
  * - FPU: an unvisited move is valued at the parent's mean value plus fpu_reduction (negative =
  *   pessimistic). The parent's mean value is already seen by the player choosing the move.
@@ -73,6 +73,8 @@
             const { priors, children } = node;
             let best = -Infinity, bestIndex = 0;
             for (let i = 0; i < children.length; i++) {
+                // A prior of exactly 0 marks a move the evaluation excluded, as in mcts.py
+                if (priors[i] === 0) continue;
                 const child = children[i];
                 const n = child === null ? 0 : child.N;
                 // A child's Q is seen by its own player to move, so negate it for this node's player

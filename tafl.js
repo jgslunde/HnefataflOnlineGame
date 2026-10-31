@@ -1,8 +1,8 @@
 /**
  * Tafl rules engine for 7x7, 9x9 and 11x11 boards under named rule sets.
  *
- * A port of tafl.py and features.py from the training code (github.com/jgslunde/Games, folder
- * Hnefatafl_RL/). A network only knows the game as that engine plays it, so every rule here
+ * A port of tafl.py and features.py from the training code (github.com/jgslunde/Tafl_RL).
+ * A network only knows the game as that engine plays it, so every rule here
  * follows the Python code; where they disagree, the Python code is right. tests/test_engine.js
  * replays reference games and rule positions written by the Python engine.
  *
@@ -56,9 +56,9 @@
 
     const RULE_FIELDS = ['name', 'description', 'setup', 'first_player', 'king_goal', 'king_capture',
         'king_armed', 'throne', 'throne_hostile', 'encirclement', 'shieldwall', 'exit_fort', 'repetition',
-        'throne_passable', 'repetition_count'];
+        'throne_passable', 'repetition_count', 'throne_passable_attackers', 'throne_hostile_defenders'];
     // Fields added after the first rule sets; model descriptions written before them leave them out
-    const RULE_DEFAULTS = { throne_passable: true, repetition_count: 3 };
+    const RULE_DEFAULTS = { throne_passable: true, repetition_count: 3, throne_passable_attackers: true, throne_hostile_defenders: true };
     const RULES_MARK = Symbol('taflRules');
 
     /**
@@ -86,7 +86,7 @@
         }
         const rules = {};
         for (const name of RULE_FIELDS) rules[name] = fields[name];
-        for (const name of ['king_armed', 'throne', 'throne_hostile', 'encirclement', 'shieldwall', 'exit_fort', 'throne_passable']) {
+        for (const name of ['king_armed', 'throne', 'throne_hostile', 'encirclement', 'shieldwall', 'exit_fort', 'throne_passable', 'throne_passable_attackers', 'throne_hostile_defenders']) {
             rules[name] = Boolean(rules[name]);
         }
         rules.repetition_count = Number(rules.repetition_count);
@@ -143,8 +143,8 @@
 
     const RULESETS = {};
     {
-        const BRANDUBH = makeRules({
-            name: 'brandubh', description: 'Brandubh 2 (World Tafl Federation, 2020), the most played 7x7 rules',
+        const BRANDUBH_2 = makeRules({
+            name: 'brandubh_2', description: 'Brandubh 2 (World Tafl Federation, 2020), the most played 7x7 rules',
             setup: BRANDUBH_SETUP, first_player: 'attackers', king_goal: 'corner', king_capture: 'weak_throne',
             king_armed: true, throne: true, throne_hostile: true, encirclement: true, shieldwall: false,
             exit_fort: false, repetition: 'defenders_lose',
@@ -162,12 +162,18 @@
             exit_fort: true, repetition: 'defenders_lose',
         });
         const sets = [
-            BRANDUBH,
-            replace(BRANDUBH, { name: 'walker_brandub', king_capture: 'weak', throne_hostile: false,
+            BRANDUBH_2,
+            replace(BRANDUBH_2, { name: 'brandubh_1', king_capture: 'weak_near_throne',
+                description: 'Brandubh 1 7x7 (aagenielsen.dk, 2015-2020): Brandubh 2, but the king beside the throne is captured by three' }),
+            replace(BRANDUBH_2, { name: 'walker_brandub', king_capture: 'weak', throne_hostile: false,
                 description: "Walker's Brandub 7x7 (2011), as played on aagenielsen.dk" }),
-            replace(BRANDUBH, { name: 'brandubh_2_5w', first_player: 'defenders', throne_passable: false,
-                repetition_count: 5, description: 'Brandubh 2.5W 7x7 (draft of February 2026; start position assumed to be that of Brandubh 2)' }),
+            replace(BRANDUBH_2, { name: 'brandubh_2_5w', first_player: 'defenders', throne_passable: false,
+                repetition_count: 5, description: 'Brandubh 2.5W 7x7 (draft of February 2026)' }),
             SAMI_TABLUT,
+            // Not in tafl.py yet, so no network has played it. Its two fields say that attackers may
+            // not cross the throne (others still may), and that the throne is hostile to attackers only
+            replace(SAMI_TABLUT, { name: 'sami_tablut_2026', throne_passable_attackers: false, throne_hostile_defenders: false,
+                description: 'Sami Tablut 9x9, 2026 version ("gulo"), as in the WTF championship 2026' }),
             makeRules({
                 name: 'sea_battle_9x9', description: 'Sea Battle 9x9, Nielsen setup', setup: SEA_BATTLE_9X9_SETUP,
                 first_player: 'attackers', king_goal: 'edge', king_capture: 'strong', king_armed: false,
@@ -460,12 +466,13 @@
         /**
          * The rook slides of pieces: side 1 attackers, 2 defenders and king, 3 all pieces. Pieces
          * other than the king never stop on a corner or the throne; they pass over the empty throne
-         * only where the rules allow it. With `visit`, calls visit(piece, target) instead of
+         * only where the rules allow it (which can differ between attackers and defenders). With `visit`, calls visit(piece, target) instead of
          * collecting moves.
          */
         _slides(side, visit) {
             const N = this.N, b = this.board, NN = N * N;
             const isCorner = this.isCorner, throne = this.throneSq, passable = this.rules.throne_passable;
+            const attackersPass = this.rules.throne_passable_attackers;
             const moves = [];
             for (let sq = 0; sq < NN; sq++) {
                 const p = b[sq];
@@ -483,7 +490,7 @@
                         if (!isKing) {
                             if (isCorner[t]) break;  // corners end a ray, so nothing lies beyond
                             if (t === throne) {
-                                if (!passable) break;
+                                if (!passable || (p === ATTACKER && !attackersPass)) break;
                                 nr += dr;
                                 nc += dc;
                                 continue;
@@ -580,7 +587,9 @@
             if (target === ATTACKER && (p === DEFENDER || (p === KING && this.rules.king_armed))) return true;
             if (target === DEFENDER && p === ATTACKER) return true;
             if (this.isCorner[sq]) return true;
-            if (this.rules.throne && this.rules.throne_hostile && sq === this.throneSq) return target === ATTACKER || p === EMPTY;
+            if (this.rules.throne && this.rules.throne_hostile && sq === this.throneSq) {
+                return target === ATTACKER || (p === EMPTY && this.rules.throne_hostile_defenders);
+            }
             return false;
         }
 

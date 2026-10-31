@@ -19,14 +19,16 @@ const PIECE_CLASSES = { [ATTACKER]: 'attacker', [DEFENDER]: 'defender', [KING]: 
 // Previous positions a game keeps, for networks with history input planes
 const KEEP_BOARDS = 32;
 // The rule set a new game of each board size starts with: the most played rules of that size
-const DEFAULT_RULESETS = { 7: 'brandubh', 9: 'sami_tablut', 11: 'copenhagen' };
+const DEFAULT_RULESETS = { 7: 'brandubh_2', 9: 'sami_tablut', 11: 'copenhagen' };
 // Display names of the rule sets, and the defenders' share of wins in human games on
 // aagenielsen.dk (a draw counts half; RULESETS.md in the training code)
 const RULESET_INFO = {
-    brandubh: { title: 'Brandubh 2', defenders: '62 % of 2,318' },
+    brandubh_2: { title: 'Brandubh 2', defenders: '62 % of 2,318' },
+    brandubh_1: { title: 'Brandubh 1', defenders: '57 % of 926' },
     walker_brandub: { title: "Walker's Brandub", defenders: '55 % of 468' },
     brandubh_2_5w: { title: 'Brandubh 2.5W', defenders: '59 % of 354' },
     sami_tablut: { title: 'Sami Tablut', defenders: '49 % of 966' },
+    sami_tablut_2026: { title: 'Sami Tablut 2026', defenders: '54 % of 230' },
     sea_battle_9x9: { title: 'Sea Battle', defenders: '51 % of 352' },
     market_hnefatafl: { title: 'Market Hnefatafl', defenders: '46 % of 222' },
     copenhagen: { title: 'Copenhagen Hnefatafl', defenders: '58 % of 13,640 (52 % among top players)' },
@@ -47,7 +49,7 @@ const boardEl = $('board');
 
 const app = {
     size: 7,
-    rules: RULESETS.brandubh,
+    rules: RULESETS.brandubh_2,
     game: null,
     history: [],          // [{game, lastMove}] before each move, for undo
     lastMove: null,
@@ -122,8 +124,9 @@ function rulesSummary(rules) {
     if (!rules.king_armed) parts.push('unarmed king');
     if (!rules.throne) parts.push('no throne');
     else {
-        parts.push(rules.throne_hostile ? 'hostile throne' : 'throne');
+        parts.push(!rules.throne_hostile ? 'throne' : rules.throne_hostile_defenders ? 'hostile throne' : 'throne hostile to attackers only');
         if (!rules.throne_passable) parts.push('only the king crosses the throne');
+        else if (!rules.throne_passable_attackers) parts.push('attackers cannot cross the throne');
     }
     for (const [field, text] of [['encirclement', 'encirclement'], ['shieldwall', 'shieldwall'], ['exit_fort', 'exit fort']]) {
         if (rules[field]) parts.push(text);
@@ -144,8 +147,13 @@ function rulesDifferences(rules, trained) {
     if (rules.king_armed !== trained.king_armed) out.push(trained.king_armed ? 'armed king' : 'unarmed king');
     if (rules.throne !== trained.throne) out.push(trained.throne ? 'a throne' : 'no throne');
     else if (trained.throne && rules.throne_hostile !== trained.throne_hostile) out.push(trained.throne_hostile ? 'hostile throne' : 'throne not hostile');
+    else if (trained.throne_hostile && rules.throne_hostile_defenders !== trained.throne_hostile_defenders) {
+        out.push(trained.throne_hostile_defenders ? 'throne hostile to defenders too' : 'throne hostile to attackers only');
+    }
     if (trained.throne && rules.throne_passable !== trained.throne_passable) {
         out.push(trained.throne_passable ? 'every piece crosses the throne' : 'only the king crosses the throne');
+    } else if (trained.throne && trained.throne_passable && rules.throne_passable_attackers !== trained.throne_passable_attackers) {
+        out.push(trained.throne_passable_attackers ? 'attackers cross the throne' : 'attackers cannot cross the throne');
     }
     for (const [field, text] of [['encirclement', 'encirclement'], ['shieldwall', 'shieldwall'], ['exit_fort', 'exit fort']]) {
         if (rules[field] !== trained[field]) out.push(trained[field] ? text : `no ${text}`);
@@ -165,7 +173,9 @@ function rulesList(rules) {
     ];
     if (rules.throne) {
         items.push(`Only the king may stop on ${corners ? 'a corner or ' : ''}the throne (the centre square). ` +
-            (rules.throne_passable ? 'Other pieces may pass over the empty throne.' : 'Only the king may pass over the empty throne.'));
+            (!rules.throne_passable ? 'Only the king may pass over the empty throne.'
+                : rules.throne_passable_attackers ? 'Other pieces may pass over the empty throne.'
+                    : 'Defenders may pass over the empty throne, attackers may not.'));
     } else {
         items.push(corners ? 'Only the king may stop on a corner. There is no throne: the centre is an ordinary square.'
             : 'There are no special squares: the centre is an ordinary square once the king has left it.');
@@ -174,14 +184,17 @@ function rulesList(rules) {
         '(not diagonally). Only the moving piece captures, so a piece may safely move in between two enemies.');
     const hostile = [];
     if (corners) hostile.push('The corners count as enemies of every piece.');
-    if (rules.throne && rules.throne_hostile) hostile.push('The throne counts as an enemy of attackers always, and of defenders when it is empty.');
+    if (rules.throne && rules.throne_hostile) {
+        hostile.push(rules.throne_hostile_defenders ? 'The throne counts as an enemy of attackers always, and of defenders when it is empty.'
+            : 'The throne counts as an enemy of attackers, never of defenders.');
+    }
     if (hostile.length) items.push(hostile.join(' '));
     items.push(rules.king_armed ? 'The king takes part in captures, both as the moving piece and as the second piece.'
         : 'The king is unarmed: he takes no part in captures.');
     const pair = corners ? 'between two attackers, or an attacker and a corner' : 'between two attackers';
     items.push({
         weak: `The king is captured like any other piece: ${pair}.`,
-        weak_throne: `The king is captured like any other piece (${pair}), but on the throne only when attackers surround him on all four sides.`,
+        weak_throne: `The king is captured like any other piece (${pair}), but on the throne only when attackers surround him on all four sides. The throne never counts against him.`,
         weak_near_throne: `The king is captured like any other piece (${pair}), but on the throne only from all four sides, and next to the throne from the three other sides.`,
         strong: `The king is captured only when attackers surround him on all four sides${rules.throne ? ', or on the three other sides when he stands next to the throne' : ''}. He cannot be captured on the board edge.`,
     }[rules.king_capture]);
@@ -807,7 +820,7 @@ function showSearchStats(stats, suffix = '') {
 
 function heuristicEval(token) {
     if (app.size !== 7) {
-        setEval(null, 'heuristics: Brandubh only');
+        setEval(null, 'heuristics: 7×7 only');
         return;
     }
     if (!cppReady) {
@@ -946,7 +959,7 @@ function renderSuggestions() {
 }
 
 // ----------------------------------------------------------------------------------------------
-// Minimax AI (C++/WebAssembly, Brandubh only)
+// Minimax AI (C++/WebAssembly, 7×7 only)
 // ----------------------------------------------------------------------------------------------
 
 /**

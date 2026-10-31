@@ -195,22 +195,23 @@ async function main() {
         await screenshot('start_menu.png');
         await escape();
         check(await menuOpen(), 'Escape does not close it before the first game');
-        check(await evaluate('document.getElementById("ng-variant").value') === '7' && await evaluate('document.getElementById("ng-ruleset").value') === 'brandubh',
+        check(await evaluate('document.getElementById("ng-variant").value') === '7' && await evaluate('document.getElementById("ng-ruleset").value') === 'brandubh_2',
             'it offers Brandubh 2 on a 7x7 board first');
         check(await offered('ng-defender-type', 'mcts') && await offered('ng-defender-type', 'minimax') &&
-            await evaluate('document.getElementById("ng-model").value') === 'brandubh_baseline_25',
-            'on 7x7 it offers both AIs, with the Brandubh network');
+            await evaluate('document.getElementById("ng-model").value') === 'brandubh_2_baseline_400',
+            'on 7x7 it offers both AIs, with the Brandubh 2 network');
+        check(await offered('ng-ruleset', 'brandubh_1') && await offered('ng-ruleset', 'brandubh_2_5w'), 'it offers the other Brandubh rule sets');
         await setSelect('ng-variant', '11');
         check(await offered('ng-defender-type', 'mcts') && !(await offered('ng-defender-type', 'minimax')) && !(await offered('ng-eval-mode', 'heuristic')),
             'on 11x11 it offers the NN + MCTS player, and neither Minimax nor the heuristics');
         await setSelect('ng-variant', '7');
         await click('#ng-start');
-        await waitFor('app.started && app.rules.name === "brandubh"', 'the Brandubh game');
+        await waitFor('app.started && app.rules.name === "brandubh_2"', 'the Brandubh 2 game');
         check(!(await menuOpen()) && await evaluate('app.cells.length') === 49,
             '"Start game" starts Brandubh 2 on a 7x7 board');
         check(await count('#board td.corner') === 4 && await count('#board td.throne') === 1, 'its corners and throne are marked');
-        await waitFor('app.modelState === "ready" && app.analysis.stats && app.analysis.stats.visits >= 200', 'the Brandubh model and its analysis', 60000);
-        check(true, `the Brandubh network evaluates the position (${await evaluate('document.getElementById("eval-value").textContent')})`);
+        await waitFor('app.modelState === "ready" && app.analysis.stats && app.analysis.stats.visits >= 200', 'the Brandubh 2 model and its analysis', 60000);
+        check(true, `the Brandubh 2 network evaluates the position (${await evaluate('document.getElementById("eval-value").textContent')})`);
 
         // --- The network's outlook: hidden until the pointer is on the eval bar ---
         const outlookShown = () => evaluate('getComputedStyle(document.getElementById("eval-outlook")).display !== "none"');
@@ -221,7 +222,7 @@ async function main() {
         const outlook = await evaluate('document.getElementById("eval-outlook").innerText');
         check(await outlookShown() && /Moves left\s+about \d+/.test(outlook) && await count('#outlook-endings li') >= 2 && outlook.includes('%'),
             `pointing at the eval bar shows it: ${outlook.replace(/\s+/g, ' ')}`);
-        check(!outlook.includes('Exit fort') && !outlook.includes('Encirclement'), 'it leaves out the endings Brandubh does not have');
+        check(!outlook.includes('Exit fort') && !outlook.includes('Encirclement'), 'it leaves out the endings Brandubh 2 does not have');
         await screenshot('outlook.png');
         await mouse('mouseMoved', 5, 5, 0);
         check(!(await outlookShown()), 'it hides again when the pointer leaves');
@@ -274,13 +275,17 @@ async function main() {
         await click('#undo-btn');
         await idle();
         check(await evaluate('app.game.moveCount') === 3, 'undo takes back a move');
-        await screenshot('brandubh.png');
+        await screenshot('brandubh_2.png');
 
         // --- Sami Tablut (9x9): defenders first, the king escapes to the edge ---
         await click('#menu-btn');
         await setSelect('ng-variant', '9');
-        check(await evaluate('[...document.getElementById("ng-ruleset").options].map(o => o.value).join()') === 'sami_tablut,sea_battle_9x9,market_hnefatafl',
-            'the panel offers the three 9x9 rule sets');
+        check(await evaluate('[...document.getElementById("ng-ruleset").options].map(o => o.value).join()') === 'sami_tablut,sami_tablut_2026,sea_battle_9x9,market_hnefatafl',
+            'the panel offers the four 9x9 rule sets');
+        await setSelect('ng-ruleset', 'sami_tablut_2026');
+        check((await evaluate('document.getElementById("ng-ruleset-note").textContent')).includes('attackers cannot cross the throne'),
+            'the 2026 version of Sami Tablut says what is different');
+        await setSelect('ng-ruleset', 'sami_tablut');
         await click('#ng-start');
         await waitFor('app.rules.name === "sami_tablut"', 'the Sami Tablut game');
         check(await evaluate('app.game.currentPlayer') === 1 && await evaluate('app.cells.length') === 81, 'in Sami Tablut the defenders move first');
@@ -291,7 +296,7 @@ async function main() {
         await click('#menu-btn');
         await setSelect('ng-variant', '11');
         check(await evaluate('document.getElementById("ng-ruleset").value') === 'copenhagen' &&
-            await evaluate('document.getElementById("ng-model").value') === 'copenhagen_baseline_5', 'an 11x11 game defaults to Copenhagen and its model');
+            await evaluate('document.getElementById("ng-model").value') === 'copenhagen_baseline_400', 'an 11x11 game defaults to Copenhagen and its model');
         // The players are chosen in the menu too: a human attacker against the network
         await setSelect('ng-defender-type', 'mcts');
         check(!(await hidden('ng-defender-mcts')) && await hidden('ng-attacker-mcts'), 'the menu shows the strength of an AI player');
@@ -413,6 +418,23 @@ async function main() {
         await escape();
         check(!(await menuOpen()) && await evaluate('app.players.attacker.type') === 'human' && await evaluate('app.rules.name') === 'fetlar',
             'Escape goes back to the game, without the menu\'s changes');
+
+        // --- Every model of models.json: a model that cannot be read is only skipped, with a console warning ---
+        const manifest = await evaluate('fetch("models.json").then(r => r.json())');
+        const ids = manifest.models.map(m => m.id);
+        check((await evaluate('app.models.map(m => m.id).join()')) === ids.join(), `the page offers all ${ids.length} models of models.json`);
+        check(Object.values(manifest.defaults).every(id => ids.includes(id)), 'every default model exists');
+        await evaluate('invalidate()');
+        for (const id of ids) {
+            const moves = await evaluate(`(async () => {
+                const m = findModel('${id}');
+                await client.loadModel(m.id, m.onnx, m.desc);
+                const game = new TaflGame(m.rules);
+                const { result } = await client.evaluate(game).promise;
+                return result.children.length === game.legalMoves().length && Number.isFinite(result.value) ? result.children.length : 0;
+            })()`);
+            check(moves > 0, `${id} loads and evaluates the start position (${moves} moves)`);
+        }
     } finally {
         browser.close();
         server.close();
